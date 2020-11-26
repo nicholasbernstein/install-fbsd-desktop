@@ -13,34 +13,41 @@ desktop=`dialog --clear --title "Select Desktop" \
         "Gnome3" "The modern Gnome Desktop" \
         "xfce4" "Lightweight XFCE desktop" \
         "mate"  "Mate dekstop based on gtk" --stdout`
-
 case $desktop in
   KDE)
+      echo $desktop
       DESKTOP_PGKS="kde5 sddm" 
       sysrc sddm_enable="YES"
       ;;
   LXQT)
+      echo $desktop
       DESKTOP_PGKS="lxqt sddm" 
       sysrc sddm_enable="YES"
       ;;
   Gnome3)
+      echo $desktop
       DESKTOP_PGKS="gnome3" 
       sysrc gnome_enable="YES"
       sysrc gdm_enable="YES"
       ;;
 
   xfce4)
+      echo $desktop
       DESKTOP_PGKS="xfce sddm" 
       sysrc sddm_enable="YES"
       ;;
   mate)
+      echo $desktop
       DESKTOP_PGKS="mate sddm" 
       sysrc sddm_enable="YES"
       ;;
-
+  *)
+     echo $desktop 
+     read foo ;;
   esac
 
-pkg install xorg sddm $DESKTOP_PKGS
+echo "install command: pkg install xorg $DESKTOP_PGKS" 
+pkg install xorg $DESKTOP_PGKS 
 
 sysrc dbus_enable="YES"
 sysrc hald_enable="YES"
