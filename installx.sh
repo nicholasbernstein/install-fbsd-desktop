@@ -2,6 +2,9 @@
 # Nick Bernstein https://github.com/nicholasbernstein/install-fbsd-desktop
 # most of this comes from the freebsd handbook 5.4.1. Quick Start x-config
 
+# this is mainly just to make sure pkg has been bootstrapped
+pkg update
+
 # Your user needs to be in the video group to use video acceleration
 default_user=`grep 1001 /etc/passwd | awk -F: '{ print $1 }'`
 VUSER=`dialog --title "Video User" --clear \
