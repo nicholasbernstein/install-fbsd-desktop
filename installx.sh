@@ -87,15 +87,6 @@ linux_base-c7 "centos v7 linux binary compatiblity layer" on \
 virtualbox-ose-additions "virtualbox guest additions" off \
 --stdout)
 
-#
-# this comment is just to draw attention to
-# the fact that this line is doing the package installs
-# and making it easy to find by having a big comment block
-# above it
-#
-
-pkg install -y  xorg $DESKTOP_PGKS $extra_pkgs
-
 # This is a little ugly, but we need to set some sysrc settings
 # and dialog is nice to look at, but is kinda clunky
 
@@ -131,19 +122,19 @@ if [ $install_dv_drivers -eq 0  ] ; then
 
 	case $card in
 		i915kms) 
-			pkg install -y drm-kmod
+			vc_pkgs="drm-kmod"
 			sysrc kld_list+="/boot/modules/i915kms.ko"
 			;;
 		radeonkms) 
-			pkg install -y drm-kmod
+			vc_pkgs="drm-kmod"
 			sysrc kld_list+="/boot/modules/radeonkms.ko"
 			;;
 		amdgpu) 
-			pkg install -y drm-kmod
+			vc_pkgs="drm-kmod"
 			sysrc kld_list+="amdgpu"
 			;;
 		nvidia) 
-			pkg install -y nvidia-driver nvidia-xconfig nvidia-settings
+			vc_pkgs="nvidia-driver nvidia-xconfig nvidia-settings"
 			nvidia-xconfig
 			sysrc kld_list+="nvidia-modeset nvidia"
 			;;
@@ -153,6 +144,15 @@ if [ $install_dv_drivers -eq 0  ] ; then
 	esac
 
 fi 
+
+#
+# this comment is just to draw attention to
+# the fact that this line is doing the package installs
+# and making it easy to find by having a big comment block
+# above it
+#
+
+pkg install -y xorg $DESKTOP_PGKS $extra_pkgs $vc_pkgs
 
 dialog --msgbox "Hopefully that worked. You'll probably want to reboot at this point" 0 0
 
