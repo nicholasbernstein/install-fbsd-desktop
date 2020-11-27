@@ -95,6 +95,12 @@ if ( echo $extra_pkgs | grep "linux_base-c7" >/dev/null )    ;
 		sysrc kld_list+="linux"
 		sysrc kld_list+="linux64"
 		sysrc linux_enable="YES"
+		grep "/compat/linux/proc" /etc/fstab 2>/dev/null || \
+			echo "linprocfs   /compat/linux/proc  linprocfs rw 0 0" >> /etc/fstab
+		grep "/compat/linux/sys" /etc/fstab 2>/dev/null || \
+			echo "linsysfs    /compat/linux/sys   linsysfs  rw 0 0" >> /etc/fstab
+		grep "/compat/linux/dev" /etc/fstab 2>/dev/null || \
+			echo "tmpfs    /compat/linux/dev/shm  tmpfs rw,mode=1777 0 0" >> /etc/fstab
 fi
 
 if ( echo $extra_pkgs | grep "virtualbox-ose-additions" >/dev/null )    ; 
