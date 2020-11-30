@@ -26,6 +26,7 @@ desktop=$(dialog --clear --title "Select Desktop" \
         "LXQT" "Lightweight Desktop based on QT" \
         "Gnome3" "The modern Gnome Desktop" \
         "xfce4" "Lightweight XFCE desktop" \
+        "windowmaker" "bringing neXt back" \
         "mate"  "Mate dekstop based on gtk" --stdout)
 
 # for any additional entries, please add a case statement below
@@ -35,6 +36,20 @@ case $desktop in
       echo $desktop
       DESKTOP_PGKS="kde5 sddm" 
       sysrc sddm_enable="YES"
+      ;;
+  windowmaker)
+      echo $desktop
+      DESKTOP_PGKS="windowmaker sddm" 
+      sysrc sddm_enable="YES"
+cat <<EOT>/usr/local/share/xsessions/wmaker.desktop
+[Desktop Entry]
+Encoding=UTF-8
+Name=Windowmaker
+Comment=Windowmaker Desktop Environment
+Exec=/usr/local/bin/wmaker
+Icon=
+Type=Application
+EOT
       ;;
   LXQT)
       echo $desktop
