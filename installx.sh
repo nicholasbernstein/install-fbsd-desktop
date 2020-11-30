@@ -22,6 +22,7 @@ pw groupmod video -m root
 desktop=$(dialog --clear --title "Select Desktop" \
         --menu "Select desktop environment to be installed" 0 0 0 \
         "KDE"  "KDE Destkop Environment" \
+        "lxde"  "The lightweight X Desktop ENvironment" \
         "LXQT" "Lightweight Desktop based on QT" \
         "Gnome3" "The modern Gnome Desktop" \
         "xfce4" "Lightweight XFCE desktop" \
@@ -38,6 +39,11 @@ case $desktop in
   LXQT)
       echo $desktop
       DESKTOP_PGKS="lxqt sddm" 
+      sysrc sddm_enable="YES"
+      ;;
+  lxde)
+      echo $desktop
+      DESKTOP_PGKS="lxde-meta lxde-common sddm" 
       sysrc sddm_enable="YES"
       ;;
   Gnome3)
@@ -76,14 +82,18 @@ grep "proc /proc procfs" /etc/fstab || echo "proc /proc procfs rw 0 0" >> /etc/f
 
 extra_pkgs=$(dialog --checklist "Select additional packages to install" 0 0 0 \
 firefox "Firefox Web browser" on \
-thunderbird "Thunderbird Email Client" on \
-libreoffice "open sourceonice suite" on \
-vlc "Video Player" on \
 bash "Video Player" on \
 vim-console "VI Improved" on \
+git-lite "lightweight git client" on \
 sudo "superuser do" on \
-doas "simpler alternative to sudo" on \
-linux_base-c7 "centos v7 linux binary compatiblity layer" on \
+thunderbird "Thunderbird Email Client" off \
+obs-studio "OBS-Studio recording/casting" off \
+audacity "Audacity music editor" off \
+simplescreenrecorder "Does it need a description?" off \
+libreoffice "open source & nice suite" off \
+vlc "Video Player" off \
+doas "simpler alternative to sudo" off \
+linux_base-c7 "centos v7 linux binary compatiblity layer" off \
 virtualbox-ose-additions "virtualbox guest additions" off \
 --stdout)
 
@@ -95,6 +105,8 @@ if ( echo $extra_pkgs | grep "linux_base-c7" >/dev/null )    ;
 		sysrc kld_list+="linux"
 		sysrc kld_list+="linux64"
 		sysrc linux_enable="YES"
+
+		mkdir -p /compat/linux/proc /compat/linux/dev/shm /compat/linux/sys
 		grep "/compat/linux/proc" /etc/fstab 2>/dev/null || \
 			echo "linprocfs   /compat/linux/proc  linprocfs rw 0 0" >> /etc/fstab
 		grep "/compat/linux/sys" /etc/fstab 2>/dev/null || \
@@ -157,8 +169,9 @@ fi
 # and making it easy to find by having a big comment block
 # above it
 #
-
-pkg install -y xorg $DESKTOP_PGKS $extra_pkgs $vc_pkgs
+base_pkgs="xorg hal dbus"
+echo "pkg install -y $base_pkgs $DESKTOP_PGKS $extra_pkgs $vc_pkgs" | tee -a installx.log
+pkg install -y $base_pkgs $DESKTOP_PGKS $extra_pkgs $vc_pkgs | tee -a installx.log
 
 dialog --msgbox "Hopefully that worked. You'll probably want to reboot at this point" 0 0
 
