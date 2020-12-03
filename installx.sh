@@ -50,7 +50,7 @@ set_login_mgr
 
 desktop=$(dialog --clear --title "Select Desktop" \
         --menu "Select desktop environment to be installed" 0 0 0 \
-        "KDE"  "KDE Destkop Environment" \
+        "KDE"  "KDE (FBSD 12+ only)" \
         "lxde"  "The lightweight X Desktop ENvironment" \
 	"LXQT" "Lightweight QT Desktop (FBSD 12+ only)" \
         "Gnome3" "The modern Gnome Desktop" \
