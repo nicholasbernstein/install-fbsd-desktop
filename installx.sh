@@ -1,9 +1,12 @@
-#!/bin/bash
+#!/bin/sh
 # Nick Bernstein https://github.com/nicholasbernstein/install-fbsd-desktop
 # most of this comes from the freebsd handbook 5.4.1. Quick Start x-config
+date > installx.log
 
+echo "kern.vty=vt" >> /boot/loader.conf
 # this is mainly just to make sure pkg has been bootstrapped
-pkg update
+export ASSUME_ALWAYS_YES=yes
+pkg update | tee -a installx.log
 
 # Your user needs to be in the video group to use video acceleration
 default_user=`grep 1001 /etc/passwd | awk -F: '{ print $1 }'`
@@ -15,32 +18,60 @@ pw groupmod video -m $VUSER
 # probably not necessary, logging into an x session as root isn't recommended.
 pw groupmod video -m root
 
+# the following creates a .xinitrc file in the user's home directory that will launch
+# the installed windowmanager as well as allow the slim display manager to pass it as
+# an argument. 
+gen_xinit() {
+	if [ ! $1 ] ; then 
+		echo "argument needed by gen_xinit" 
+		return 0 
+	else
+		xinittxt="#!/bin/sh\n mywm="$1"\n if [ \$1 ] ; then\n \tcase \$1 in \n \t\tdefault) exec \$mywm ;;\n \t\t*) exec \$1 ;;\n \tesac\n else\n \texec $mywm\n fi"
+		echo -e $xinittxt > /home/$VUSER/.xinitrc && chown $VUSER:$VUSER /home/$VUSER/.xinitrc
+		echo -e $xinittxt > /etc/skel/.xinitrc
+	fi
+}
+
 
 # lets pick our desktop environment. SDDM is going to be used as the login 
 # manager instead of slim since it "works out of the box" w/o .xinitrc stuff
+
+set_login_mgr() { 
+	if (uname -r | grep "11" >/dev/null) ; then
+		mywm="slim"
+		slim_extra_pkgs="slim-freebsd-dark-theme"
+		pwd_mkdb -p /etc/master.passwd
+	else 
+		mywm="sddm"
+	fi
+}
+
+set_login_mgr
 
 desktop=$(dialog --clear --title "Select Desktop" \
         --menu "Select desktop environment to be installed" 0 0 0 \
         "KDE"  "KDE Destkop Environment" \
         "lxde"  "The lightweight X Desktop ENvironment" \
-        "LXQT" "Lightweight Desktop based on QT" \
+	"LXQT" "Lightweight QT Desktop (FBSD 12+ only)" \
         "Gnome3" "The modern Gnome Desktop" \
         "xfce4" "Lightweight XFCE desktop" \
         "windowmaker" "bringing neXt back" \
+        "awesome" " a tiling window manager" \
         "mate"  "Mate dekstop based on gtk" --stdout)
 
 # for any additional entries, please add a case statement below
 
 case $desktop in
   KDE)
-      echo $desktop
-      DESKTOP_PGKS="kde5 sddm" 
-      sysrc sddm_enable="YES"
+      gen_xinit "startkde"
+      DESKTOP_PGKS="kde5 ${mywm}" 
+      sysrc ${mywm}_enable="YES"
       ;;
   windowmaker)
-      echo $desktop
-      DESKTOP_PGKS="windowmaker sddm" 
-      sysrc sddm_enable="YES"
+      gen_xinit "/usr/local/bin/wmaker"
+      DESKTOP_PGKS="kde5 ${mywm}" 
+      DESKTOP_PGKS="windowmaker wmakerconf ${mywm}" 
+      sysrc ${mywm}_enable="YES"
 cat <<EOT>/usr/local/share/xsessions/wmaker.desktop
 [Desktop Entry]
 Encoding=UTF-8
@@ -52,31 +83,37 @@ Type=Application
 EOT
       ;;
   LXQT)
-      echo $desktop
-      DESKTOP_PGKS="lxqt sddm" 
-      sysrc sddm_enable="YES"
+      gen_xinit "startlxqt"
+      DESKTOP_PGKS="lxqt ${mywm}" 
+      sysrc ${mywm}_enable="YES"
       ;;
   lxde)
-      echo $desktop
-      DESKTOP_PGKS="lxde-meta lxde-common sddm" 
-      sysrc sddm_enable="YES"
+      gen_xinit "startlxde"
+      DESKTOP_PGKS="lxde-meta lxde-common ${mywm}" 
+      sysrc ${mywm}_enable="YES"
       ;;
   Gnome3)
-      echo $desktop
+      gen_xinit "gnome-session"
       DESKTOP_PGKS="gnome3" 
       sysrc gnome_enable="YES"
       sysrc gdm_enable="YES"
-      sysrc sddm_enable="NO"
+      sysrc ${mywm}_enable="NO"
       ;;
   xfce4)
-      echo $desktop
-      DESKTOP_PGKS="xfce sddm" 
-      sysrc sddm_enable="YES"
+      gen_xinit "startxfce4"
+      DESKTOP_PGKS="xfce ${mywm}" 
+      sysrc ${mywm}_enable="YES"
       ;;
   mate)
+      gen_xinit "mate-session"
       echo $desktop
-      DESKTOP_PGKS="mate sddm" 
-      sysrc sddm_enable="YES"
+      DESKTOP_PGKS="mate ${mywm}" 
+      sysrc ${mywm}_enable="YES"
+      ;;
+  awesome)
+      gen_xinit "awesome"
+      DESKTOP_PGKS="awesome ${mywm}" 
+      sysrc ${mywm}_enable="YES"
       ;;
   *)
      echo "$desktop isn't a valid option."
@@ -185,8 +222,26 @@ fi
 # above it
 #
 base_pkgs="xorg hal dbus"
-echo "pkg install -y $base_pkgs $DESKTOP_PGKS $extra_pkgs $vc_pkgs" | tee -a installx.log
-pkg install -y $base_pkgs $DESKTOP_PGKS $extra_pkgs $vc_pkgs | tee -a installx.log
+all_pkgs="$base_pkgs $DESKTOP_PGKS $extra_pkgs $vc_pkgs $slim_extra_pkgs"
+echo "pkg install -y $all_pkgs" | tee -a installx.log
+pkg install -y $all_pkgs | tee -a installx.log
+
+# post install stuff
+if [ "slim" = $mywm ] ; then
+	sed -i '' -E 's/^current_theme.+$/current_theme		slim-freebsd-dark-theme/' /usr/local/etc/slim.conf
+fi
+
+# make sudo behave like default linux setup
+if ( echo $all_pkgs | grep "sudo" > /dev/null ) ; then
+	echo "%wheel ALL=(ALL) ALL" >> /usr/local/etc/sudoers
+fi
+
+# on 11.x w/ mate re-installing fixed a core-dump
+if [ $desktop = "mate" ] ; then 
+	if ( echo $(uname -r) | grep "11" > /dev/null ) ; then 
+		pkg install -f gsettings-desktop-schemas
+	fi
+fi
 
 dialog --msgbox "Hopefully that worked. You'll probably want to reboot at this point" 0 0
 
