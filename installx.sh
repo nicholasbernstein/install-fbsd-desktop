@@ -13,7 +13,8 @@ default_user=`grep 1001 /etc/passwd | awk -F: '{ print $1 }'`
 VUSER=`dialog --title "Video User" --clear \
         --inputbox "What user should be added to the video group?" 0 0  $default_user --stdout`
 
-pw groupmod video -m $VUSER 
+pw groupmod video -m $VUSER && echo "added $VUSER to group: video"
+pw groupmod wheel -m $VUSER && echo "added $VUSER to group: wheel" 
 
 # probably not necessary, logging into an x session as root isn't recommended.
 pw groupmod video -m root
@@ -26,7 +27,7 @@ gen_xinit() {
 		echo "argument needed by gen_xinit" 
 		return 0 
 	else
-		xinittxt="#!/bin/sh\n mywm="$1"\n if [ \$1 ] ; then\n \tcase \$1 in \n \t\tdefault) exec \$mywm ;;\n \t\t*) exec \$1 ;;\n \tesac\n else\n \texec $mywm\n fi"
+		xinittxt="#!/bin/sh\n mywm="$1"\n if [ \$1 ] ; then\n \tcase \$1 in \n \t\tdefault) exec \$mywm ;;\n \t\t*) exec \$1 ;;\n \tesac\n else\n \texec \$mywm\n fi"
 		echo -e $xinittxt > /home/$VUSER/.xinitrc && chown $VUSER:$VUSER /home/$VUSER/.xinitrc
 		echo -e $xinittxt > /etc/skel/.xinitrc
 	fi
@@ -101,7 +102,7 @@ EOT
       ;;
   xfce4)
       gen_xinit "startxfce4"
-      DESKTOP_PGKS="xfce ${mywm}" 
+      DESKTOP_PGKS="xfce xfce4-goodies ${mywm}" 
       sysrc ${mywm}_enable="YES"
       ;;
   mate)
@@ -178,8 +179,8 @@ fi
 # Lets handle the 4 major cases, and hope for the best
 
 dialog --title "Graphics Drivers" --yesno "Would you like to try to install the drivers for your video card?\n\nPlease refer to freebsd handbook for more details:\nhttps://www.freebsd.org/doc/handbook/x-config.html" 0 0
-
 install_dv_drivers=$?
+
 if [ $install_dv_drivers -eq 0  ] ; then 
 
 	card=$(dialog --checklist "Select additional packages to install" 0 0 0 \
@@ -187,6 +188,8 @@ if [ $install_dv_drivers -eq 0  ] ; then
 	radeonkms "most OLDER Radeon graphics cards" off \
 	amdgpu "most NEWER AMD graphics cards" off \
 	nvidia "NVidia Graphics Cards" off \
+	vesa 	"Generic driver that may work as a fallback" off \
+	scfb 	"Another Generic diver for UEFI and ARM" off \
 	other "Anything but the above" off \
 	--stdout)
 
@@ -208,12 +211,34 @@ if [ $install_dv_drivers -eq 0  ] ; then
 			nvidia-xconfig
 			sysrc kld_list+="nvidia-modeset nvidia"
 			;;
+		vesa)
+			vc_pkgs="xf86-video-vesa"
+			;;
+		scfb)
+			vc_pkgs="xf86-video-scfb"
+			;;
 		*)
-			dialog --msgbox "You'll need to check the freebsd handbook or forums" 0 0
+			pciconf=$(pciconf -vl | grep -B3 display)
+			dialog --msgbox "You'll need to check the freebsd handbook or forums. The following output may be helpful in finding a driber: pciconf -vl | grep -B3 display: $pciconf" 0 0
 			;;
 	esac
 
 fi 
+
+# this is referred to during the package install, but needs to be up here so we can ask the user things.
+all_pkgs="xorg hal dbus $DESKTOP_PGKS $extra_pkgs $vc_pkgs $slim_extra_pkgs"
+
+# check to see if we should set the user shell to bash
+if ( echo $all_pkgs | grep "bash" > /dev/null ) ; then
+	dialog --title "Bash" --yesno "Would you like to set the $VUSER user's default shell to bash?" --stdout 0 0
+	bash_yes=$?
+fi
+
+# check to see if we should allow %wheel to sudo
+if ( echo $all_pkgs | grep "sudo" > /dev/null ) ; then
+	dialog --title "sudo" --yesno "would you like to make sudo act like the default behavior on linux\n(wheel group can sudo)" --stdout 0 0
+	sudo_yes=$?
+fi
 
 #
 # this comment is just to draw attention to
@@ -221,8 +246,6 @@ fi
 # and making it easy to find by having a big comment block
 # above it
 #
-base_pkgs="xorg hal dbus"
-all_pkgs="$base_pkgs $DESKTOP_PGKS $extra_pkgs $vc_pkgs $slim_extra_pkgs"
 echo "pkg install -y $all_pkgs" | tee -a installx.log
 pkg install -y $all_pkgs | tee -a installx.log
 
@@ -232,8 +255,8 @@ if [ "slim" = $mywm ] ; then
 fi
 
 # make sudo behave like default linux setup
-if ( echo $all_pkgs | grep "sudo" > /dev/null ) ; then
-	echo "%wheel ALL=(ALL) ALL" >> /usr/local/etc/sudoers
+if [ $sudo_yes -eq 0 ] ; then
+	test -e /usr/local/etc/sudoers && echo "%wheel ALL=(ALL) ALL" >> /usr/local/etc/sudoers
 fi
 
 # on 11.x w/ mate re-installing fixed a core-dump
@@ -243,5 +266,11 @@ if [ $desktop = "mate" ] ; then
 	fi
 fi
 
-dialog --msgbox "Hopefully that worked. You'll probably want to reboot at this point" 0 0
+# Set the user's shell to bash
+if [ $bash_yes -eq 0 ] ; then
+	chpass $VUSER -s /usr/local/bin/bash
+fi
+
+welcome="Thanks for trying this setup script. If you're new to freebsd, it's worth noting that instead of trying to search google for how to do something, you probably want to check the handbook on freebsd.org or read the built-in man pages. Doing a 'man -k <topic>' will search for any matching documentation, and unlike some, ahem, other *nix operating systems, bsd's built in documentation is really good.\n\n"
+dialog --msgbox "$welcome Hopefully that worked. You'll probably want to reboot at this point" 0 0
 
