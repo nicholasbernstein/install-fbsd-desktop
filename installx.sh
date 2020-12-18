@@ -3,7 +3,86 @@
 # most of this comes from the freebsd handbook 5.4.1. Quick Start x-config
 date > installx.log
 
-echo "kern.vty=vt" >> /boot/loader.conf
+grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
+
+load_card_readers() {
+	# Load MMC/SD card-reader support
+	sysrc kld_load+="mmc"
+	sysrc kld_load+="mmcsd"
+	sysrc kld_load+="sdhci"
+}
+
+load_atapi() {
+	# Access ATAPI devices through the CAM subsystem
+	sysrc kld_load+="atapicam"
+}
+
+load_fuse() {
+	# Filesystems in Userspace
+	fuse_pkgs="fuse fuse-utils"
+	extra_pkgs="$extra_pkgs fusefs-lkl e2fsprogs"
+	sysrc kld_load+="fuse"
+}
+
+load_coretemp(){
+	# Intel Core thermal sensors
+	sysrc kld_load+="coretemp"
+}
+
+load_amdtemp() {
+	# AMD K8, K10, K11 thermal sensors
+	if ( sysctl -a | grep -q -i "hw.model" | grep -q AMD ) ; then 
+		amdtemp_load="YES"
+	fi
+}
+
+load_bluetooth() { 
+	# most common bluetooth adapters use this
+	sysrc kld_load+="ng_ubt"
+	sysrc hcsecd_enable="YES"
+	sysrc sdpd_enable="YES"
+}
+
+enable_ipfw_firewall() {
+	# this enables the ipfw firewall with the workstation profile
+	# it allows communication w/ other hosts on the network, outgoing traffic
+	# and any specific ports (ssh) we choose to enable
+	sysrc firewall_type="WORKSTATION"
+	sysrc firewall_myservices="22/tcp"
+	sysrc firewall_allowservices="any"
+	sysrc firewall_enable="YES"
+}
+
+enable_tmpfs() {
+	# In-memory filesystems
+	sysrc kld_load+="tmpfs"
+}
+
+enable_async_io() {
+	# Asynchronous I/O
+	sysrc kld_load+="aio"
+}
+
+enable_workstation_pwr_mgmnt() {
+	# powerd: hiadaptive speed while on AC power, adaptive while on battery power
+	sysrc powerd_enable="YES"
+	sysrc powerd_flags="-a hiadaptive -b adaptive"
+}
+
+enable_webcam(){
+	#this just enables the ability to use webcams
+	extra_pkgs="$extra_pkgs cuse4bsd webcamd"
+	sysrc kld_load+="cuse4bsd"
+	sysrc webcamd_enable="YES"
+}
+
+enable_cups(){
+	#this just enables the ability to use webcams
+	extra_pkgs="$extra_pkgs cups"
+	sysrc cupsd_enable="YES"
+}
+
+
 # this is mainly just to make sure pkg has been bootstrapped
 export ASSUME_ALWAYS_YES=yes
 pkg update | tee -a installx.log
@@ -53,7 +132,7 @@ desktop=$(dialog --clear --title "Select Desktop" \
         --menu "Select desktop environment to be installed" 0 0 0 \
         "KDE"  "KDE (FBSD 12+ only)" \
         "lxde"  "The lightweight X Desktop ENvironment" \
-	"LXQT" "Lightweight QT Desktop (FBSD 12+ only)" \
+		"LXQT" "Lightweight QT Desktop (FBSD 12+ only)" \
         "Gnome3" "The modern Gnome Desktop" \
         "xfce4" "Lightweight XFCE desktop" \
         "windowmaker" "bringing neXt back" \
@@ -229,16 +308,31 @@ fi
 all_pkgs="xorg hal dbus $DESKTOP_PGKS $extra_pkgs $vc_pkgs $slim_extra_pkgs"
 
 # check to see if we should set the user shell to bash
-if ( echo $all_pkgs | grep "bash" > /dev/null ) ; then
+if ( echo $all_pkgs | grep -q "bash" ) ; then
 	dialog --title "Bash" --yesno "Would you like to set the $VUSER user's default shell to bash?" --stdout 0 0
 	bash_yes=$?
 fi
 
 # check to see if we should allow %wheel to sudo
-if ( echo $all_pkgs | grep "sudo" > /dev/null ) ; then
+if ( echo $all_pkgs | grep -q "sudo" ) ; then
 	dialog --title "sudo" --yesno "would you like to make sudo act like the default behavior on linux\n(wheel group can sudo)" --stdout 0 0
 	sudo_yes=$?
 fi
+
+# This opt activities
+opt_activities=$(dialog --checklist "Select additional options" 0 0 0 \
+	load_card_readers "enable card readers like sd cards" on \
+	load_atapi "enable atapi to enable external storage devices like cds" on \
+	load_fuse "enable userspace fileystems" on \
+	load_coretemp "enable cpu temp sensors for intel (and amd)" on \
+	load_amdtemp "enable additional amd temp sensors" off \
+	enable_tmpfs "enable in-mem tempfs" on \
+	enable_cups "printing" off \
+	enable_webcam "enables webcams to be used" on \
+	enable_async_io "enable async io for better perf" on \
+	enable_workstation_pwr_mgmnt "change pwr on batter/plugged in" on \
+	load_bluetooth "enable bluetooth kernel modules" on \
+	--stdout )
 
 #
 # this comment is just to draw attention to
@@ -261,7 +355,7 @@ fi
 
 # on 11.x w/ mate re-installing fixed a core-dump
 if [ $desktop = "mate" ] ; then 
-	if ( echo $(uname -r) | grep "11" > /dev/null ) ; then 
+	if ( echo $(uname -r) | grep -q "11" ) ; then 
 		pkg install -f gsettings-desktop-schemas
 	fi
 fi
@@ -270,6 +364,21 @@ fi
 if [ $bash_yes -eq 0 ] ; then
 	chpass $VUSER -s /usr/local/bin/bash
 fi
+
+echo $opt_activities | grep -q load_card_readers && load_card_readers
+echo $opt_activities | grep -q load_atapi && load_card_readers
+echo $opt_activities | grep -q load_fuse && load_card_readers
+echo $opt_activities | grep -q load_coretemp && load_card_readers
+echo $opt_activities | grep -q load_amdtemp && load_card_readers
+echo $opt_activities | grep -q load_bluetooth && load_card_readers
+echo $opt_activities | grep -q enable_ipfw_firewall && load_card_readers
+echo $opt_activities | grep -q enable_tmpfs && enable_tmpfs
+echo $opt_activities | grep -q enable_async_io && enable_async_io
+echo $opt_activities | grep -q enable_workstation_pwr_mgmnt && enable_workstation_pwr_mgmnt
+echo $opt_activities | grep -q load_bluetooth && load_bluetooth
+echo $opt_activities | grep -q enable_cups && enable_cups
+echo $opt_activities | grep -q enable_webcam && enable_webcam
+
 
 welcome="Thanks for trying this setup script. If you're new to freebsd, it's worth noting that instead of trying to search google for how to do something, you probably want to check the handbook on freebsd.org or read the built-in man pages. Doing a 'man -k <topic>' will search for any matching documentation, and unlike some, ahem, other *nix operating systems, bsd's built in documentation is really good.\n\n"
 dialog --msgbox "$welcome Hopefully that worked. You'll probably want to reboot at this point" 0 0
