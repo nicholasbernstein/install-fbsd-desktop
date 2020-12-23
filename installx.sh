@@ -362,7 +362,7 @@ fi
 
 # Set the user's shell to bash
 if [ $bash_yes -eq 0 ] ; then
-	chpass $VUSER -s /usr/local/bin/bash
+	chpass -s /usr/local/bin/bash $VUSER || echo "failed to change shell to bash"
 fi
 
 echo $opt_activities | grep -q load_card_readers && load_card_readers
