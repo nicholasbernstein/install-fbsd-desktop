@@ -7,26 +7,26 @@ grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
 
 load_card_readers() {
 	# Load MMC/SD card-reader support
-	sysrc kld_load+="mmc"
-	sysrc kld_load+="mmcsd"
-	sysrc kld_load+="sdhci"
+	sysrc kld_list+="mmc"
+	sysrc kld_list+="mmcsd"
+	sysrc kld_list+="sdhci"
 }
 
 load_atapi() {
 	# Access ATAPI devices through the CAM subsystem
-	sysrc kld_load+="atapicam"
+	sysrc kld_list+="atapicam"
 }
 
 load_fuse() {
 	# Filesystems in Userspace
 	fuse_pkgs="fuse fuse-utils"
 	extra_pkgs="$extra_pkgs fusefs-lkl e2fsprogs"
-	sysrc kld_load+="fuse"
+	sysrc kld_list+="fuse"
 }
 
 load_coretemp(){
 	# Intel Core thermal sensors
-	sysrc kld_load+="coretemp"
+	sysrc kld_list+="coretemp"
 }
 
 load_amdtemp() {
@@ -38,7 +38,7 @@ load_amdtemp() {
 
 load_bluetooth() { 
 	# most common bluetooth adapters use this
-	sysrc kld_load+="ng_ubt"
+	sysrc kld_list+="ng_ubt"
 	sysrc hcsecd_enable="YES"
 	sysrc sdpd_enable="YES"
 }
@@ -55,12 +55,12 @@ enable_ipfw_firewall() {
 
 enable_tmpfs() {
 	# In-memory filesystems
-	sysrc kld_load+="tmpfs"
+	sysrc kld_list+="tmpfs"
 }
 
 enable_async_io() {
 	# Asynchronous I/O
-	sysrc kld_load+="aio"
+	sysrc kld_list+="aio"
 }
 
 enable_workstation_pwr_mgmnt() {
@@ -72,7 +72,7 @@ enable_workstation_pwr_mgmnt() {
 enable_webcam(){
 	#this just enables the ability to use webcams
 	extra_pkgs="$extra_pkgs cuse4bsd webcamd"
-	sysrc kld_load+="cuse4bsd"
+	sysrc kld_list+="cuse4bsd"
 	sysrc webcamd_enable="YES"
 }
 
