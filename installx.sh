@@ -77,7 +77,7 @@ enable_webcam(){
 }
 
 enable_cups(){
-	#this just enables the ability to use webcams
+	#this just enables the ability to use printers
 	extra_pkgs="$extra_pkgs cups"
 	sysrc cupsd_enable="YES"
 }
@@ -129,27 +129,26 @@ set_login_mgr() {
 set_login_mgr
 
 desktop=$(dialog --clear --title "Select Desktop" \
-        --menu "Select desktop environment to be installed" 0 0 0 \
+        --menu "Select desktop environment to be installed:" 0 0 0 \
         "KDE"  "KDE (FBSD 12+ only)" \
-        "lxde"  "The lightweight X Desktop ENvironment" \
+        "LXDE"  "The Lightweight X Desktop Environment" \
 		"LXQT" "Lightweight QT Desktop (FBSD 12+ only)" \
-        "Gnome3" "The modern Gnome Desktop" \
-        "xfce4" "Lightweight XFCE desktop" \
-        "windowmaker" "bringing neXt back" \
-        "awesome" " a tiling window manager" \
-        "mate"  "Mate dekstop based on gtk" --stdout)
+        "GNOME 3" "The modern GNOME desktop" \
+        "Xfce4" "Lightweight XFCE desktop" \
+        "WindowMaker" "Bringing neXt back" \
+        "awesome" "A tiling window manager" \
+        "MATE"  "The MATE dekstop, a fork of GNOME 2" --stdout)
 
 # for any additional entries, please add a case statement below
 
 case $desktop in
   KDE)
       gen_xinit "startkde"
-      DESKTOP_PGKS="kde5 ${mywm}" 
+      DESKTOP_PGKS="plasma5-plasma plasma5-plasma-disks plasma5-plasma-systemmonitor kde-baseapps ${mywm}" 
       sysrc ${mywm}_enable="YES"
       ;;
   windowmaker)
       gen_xinit "/usr/local/bin/wmaker"
-      DESKTOP_PGKS="kde5 ${mywm}" 
       DESKTOP_PGKS="windowmaker wmakerconf ${mywm}" 
       sysrc ${mywm}_enable="YES"
 cat <<EOT>/usr/local/share/xsessions/wmaker.desktop
@@ -212,21 +211,21 @@ grep "proc /proc procfs" /etc/fstab || echo "proc /proc procfs rw 0 0" >> /etc/f
 # and anyone coming from linux probably wants bash, sudo & vim. Let's make
 # the transition easy for them
 
-extra_pkgs=$(dialog --checklist "Select additional packages to install" 0 0 0 \
+extra_pkgs=$(dialog --checklist "Select additional packages to install:" 0 0 0 \
 firefox "Firefox Web browser" on \
 bash "GNU Bourne-Again SHell" on \
 vim-console "VI Improved" on \
-git-lite "lightweight git client" on \
-sudo "superuser do" on \
+git-lite "Lightweight Git client" on \
+sudo "Superuser do" on \
 thunderbird "Thunderbird Email Client" off \
 obs-studio "OBS-Studio recording/casting" off \
-audacity "Audacity music editor" off \
+audacity "Audio editor" off \
 simplescreenrecorder "Does it need a description?" off \
-libreoffice "open source & nice suite" off \
-vlc "Video Player" off \
-doas "simpler alternative to sudo" off \
-linux_base-c7 "centos v7 linux binary compatiblity layer" off \
-virtualbox-ose-additions "virtualbox guest additions" off \
+libreoffice "Open source office suite" off \
+vlc "Video player" off \
+doas "Simpler alternative to sudo" off \
+linux_base-c7 "CentOS v7 linux binary compatiblity layer" off \
+virtualbox-ose-additions "VirtualBox guest additions" off \
 --stdout)
 
 # This is a little ugly, but we need to set some sysrc settings
@@ -262,7 +261,7 @@ install_dv_drivers=$?
 
 if [ $install_dv_drivers -eq 0  ] ; then 
 
-	card=$(dialog --checklist "Select additional packages to install" 0 0 0 \
+	card=$(dialog --checklist "Select additional packages to install:" 0 0 0 \
 	i915kms "most Intel graphics cards" off \
 	radeonkms "most OLDER Radeon graphics cards" off \
 	amdgpu "most NEWER AMD graphics cards" off \
@@ -278,11 +277,11 @@ if [ $install_dv_drivers -eq 0  ] ; then
 			sysrc kld_list+="/boot/modules/i915kms.ko"
 			;;
 		radeonkms) 
-			vc_pkgs="drm-kmod"
+			vc_pkgs="drm-kmod xf86-video-ati"
 			sysrc kld_list+="/boot/modules/radeonkms.ko"
 			;;
 		amdgpu) 
-			vc_pkgs="drm-kmod"
+			vc_pkgs="drm-kmod xf86-video-amdgpu"
 			sysrc kld_list+="amdgpu"
 			;;
 		nvidia) 
@@ -298,7 +297,7 @@ if [ $install_dv_drivers -eq 0  ] ; then
 			;;
 		*)
 			pciconf=$(pciconf -vl | grep -B3 display)
-			dialog --msgbox "You'll need to check the freebsd handbook or forums. The following output may be helpful in finding a driber: pciconf -vl | grep -B3 display: $pciconf" 0 0
+			dialog --msgbox "You'll need to check the FreeBSD handbook or forums. The following output may be helpful in finding a driber: pciconf -vl | grep -B3 display: $pciconf" 0 0
 			;;
 	esac
 
@@ -306,7 +305,7 @@ fi
 
 # this is referred to during the package install, but needs to be up here so we can ask the user things.
 #all_pkgs="xorg hal dbus $DESKTOP_PGKS $extra_pkgs $vc_pkgs $slim_extra_pkgs"
-all_pkgs="xorg dbus $DESKTOP_PGKS $extra_pkgs $vc_pkgs $slim_extra_pkgs"
+all_pkgs="xorg-minimal xorg-libraries xorg-fonts xorg-fonts-truetype xf86-input-keyboard xf86-input-libinput xf86-input-mouse dbus $DESKTOP_PGKS $extra_pkgs $vc_pkgs $slim_extra_pkgs"
 
 # check to see if we should set the user shell to bash
 if ( echo $all_pkgs | grep -q "bash" ) ; then
@@ -316,23 +315,23 @@ fi
 
 # check to see if we should allow %wheel to sudo
 if ( echo $all_pkgs | grep -q "sudo" ) ; then
-	dialog --title "sudo" --yesno "would you like to make sudo act like the default behavior on linux\n(wheel group can sudo)" --stdout 0 0
+	dialog --title "sudo" --yesno "Would you like to make sudo act like the default behavior on linux?\n(wheel group can sudo)" --stdout 0 0
 	sudo_yes=$?
 fi
 
-# This opt activities
+# This is opt activities
 opt_activities=$(dialog --checklist "Select additional options" 0 0 0 \
 	load_card_readers "enable card readers like sd cards" on \
 	load_atapi "enable atapi to enable external storage devices like cds" on \
 	load_fuse "enable userspace fileystems" on \
 	load_coretemp "enable cpu temp sensors for intel (and amd)" on \
-	load_amdtemp "enable additional amd temp sensors" off \
+	load_amdtemp "enable additional amd temp sensors" on \
 	enable_tmpfs "enable in-mem tempfs" on \
 	enable_cups "printing" off \
-	enable_webcam "enables webcams to be used" on \
+	enable_webcam "enables webcams to be used" off \
 	enable_async_io "enable async io for better perf" on \
-	enable_workstation_pwr_mgmnt "change pwr on batter/plugged in" on \
-	load_bluetooth "enable bluetooth kernel modules" on \
+	enable_workstation_pwr_mgmnt "change pwr on battery/plugged in" on \
+	load_bluetooth "enable bluetooth kernel modules" off \
 	--stdout )
 
 #
@@ -381,6 +380,6 @@ echo $opt_activities | grep -q enable_cups && enable_cups
 echo $opt_activities | grep -q enable_webcam && enable_webcam
 
 
-welcome="Thanks for trying this setup script. If you're new to freebsd, it's worth noting that instead of trying to search google for how to do something, you probably want to check the handbook on freebsd.org or read the built-in man pages. Doing a 'man -k <topic>' will search for any matching documentation, and unlike some, ahem, other *nix operating systems, bsd's built in documentation is really good.\n\n"
-dialog --msgbox "$welcome Hopefully that worked. You'll probably want to reboot at this point" 0 0
+welcome="Thanks for trying this setup script. If you're new to FreeBSD, it's worth noting that instead of trying to search google for how to do something, you probably want to check the handbook on freebsd.org or read the built-in man pages. Doing a 'man -k <topic>' will search for any matching documentation, and unlike some, ahem, other *nix operating systems, FreeBSD's built in documentation is really good.\n\n"
+dialog --msgbox "$welcome Hopefully that worked. You'll probably want to reboot at this point." 0 0
 
