@@ -232,7 +232,7 @@ grep "proc /proc procfs" /etc/fstab || echo "proc /proc procfs rw 0 0" >> /etc/f
 extra_pkgs=$(dialog --checklist "Select additional packages to install:" 0 0 0 \
 firefox "Firefox Web browser" on \
 bash "GNU Bourne-Again SHell" on \
-vim-console "VI Improved" on \
+vim-tiny "VI Improved" on \
 git-lite "Lightweight Git client" on \
 sudo "Superuser do" on \
 thunderbird "Thunderbird Email Client" off \
