@@ -5,8 +5,9 @@ date > installx.log
 
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
 
-change_pkg_url_to_quarterly(){
+change_pkg_url_to_latest(){
 	sed -i 'orig' 's/quarterly/latest/' /etc/pkg/FreeBSD.conf
+	grep url /etc/pkg/FreeBSD.conf
 }
 
 load_card_readers() {
@@ -106,10 +107,23 @@ linux-base-c7(){
 virtualbox-ose-additions() {
 		sysrc vboxguest_enable="YES"
 		sysrc vboxservice_enable="YES"
+		dialog --infobox "Please use VBoxSVGA as the virtualbox display driver for best performance." 0 0
 }
+
+adjust_sysctl_buffers() { 
+	sysctl net.local.stream.recvspace=65536
+	grep "net.local.stream.recvspace" /etc/sysctl.conf || echo "net.local.stream.recvspace=65536" >> /etc/sysctl.conf
+	sysctl net.local.stream.sendspace=65536
+	grep "net.local.stream.sendspace" /etc/sysctl.conf || echo "net.local.stream.sendspace=65536" >> /etc/sysctl.conf
+}
+
 # this is mainly just to make sure pkg has been bootstrapped
 export ASSUME_ALWAYS_YES=yes
 pkg update | tee -a installx.log
+
+# this will help with performance of desktop applications
+# and may help perf during install, so I'm doing it early
+adjust_sysctl_buffers
 
 # Your user needs to be in the video group to use video acceleration
 default_user=`grep 1001 /etc/passwd | awk -F: '{ print $1 }'`
@@ -157,7 +171,7 @@ dialog --title "Rolling Release" --yesno "Change pkg to use 'latest' packages in
 rolling=$?
 
 if [ $rolling -eq 0  ] ; then 
-	change_pkg_url_to_quarterly()
+	change_pkg_url_to_latest
 fi
 
 
@@ -177,7 +191,7 @@ desktop=$(dialog --clear --title "Select Desktop" \
 case $desktop in
   KDE)
       gen_xinit "startkde"
-      DESKTOP_PGKS="plasma5-plasma plasma5-plasma-disks plasma5-plasma-systemmonitor kde-baseapps ${mywm}" 
+      DESKTOP_PGKS="kde5 plasma5-plasma plasma5-plasma-disks plasma5-plasma-systemmonitor kde-baseapps ${mywm}" 
       sysrc ${mywm}_enable="YES"
       ;;
   windowmaker)
@@ -401,6 +415,6 @@ fi
 
 
 
-welcome="Thanks for trying this setup script. If you're new to FreeBSD, it's worth noting that instead of trying to search google for how to do something, you probably want to check the handbook on freebsd.org or read the built-in man pages. Doing a 'man -k <topic>' will search for any matching documentation, and unlike some, ahem, other *nix operating systems, FreeBSD's built in documentation is really good.\n\n"
-dialog --msgbox "$welcome Hopefully that worked. You'll probably want to reboot at this point." 0 0
+welcome="Thanks for trying this setup script. If you're new to FreeBSD, it's worth noting that instead of trying to search google for how to do something, you probably want to check the handbook on freebsd.org or read the built-in man pages. \n\n Doing a 'man -k <topic>' will search for any matching documentation, and unlike some, ahem, other *nix operating systems, FreeBSD's built in documentation is really good.\n\n"
+dialog --msgbox "$welcome Hopefully that worked. You'll probably want to reboot at this point. Please report any problems to http://bug.freebsddesktop.xyz/" 0 0
 
