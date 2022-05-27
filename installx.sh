@@ -5,6 +5,11 @@ date > installx.log
 
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
 
+change_pkg_url_to_quarterly(){
+	sed -i 'orig' 's/quarterly/latest/' /etc/pkg/FreeBSD.conf
+	grep url /etc/pkg/FreeBSD.conf
+}
+
 load_card_readers() {
 	# Load MMC/SD card-reader support
 	sysrc kld_list+="mmc"
@@ -85,7 +90,9 @@ enable_cups(){
 
 linux-base-c7(){
 		sysrc kld_list+="linux"
+		kldload linux
 		sysrc kld_list+="linux64"
+		kldload linux64
 		sysrc linux_enable="YES"
 
 		mkdir -p /compat/linux/proc /compat/linux/dev/shm /compat/linux/sys
@@ -145,6 +152,15 @@ set_login_mgr() {
 }
 
 set_login_mgr
+
+dialog --title "Rolling Release" --yesno "Change pkg to use 'latest' packages instead of quarterly? Recommended for workstations. This prevents potential missing firefox package in 13.1 quarterly" 0 0
+
+rolling=$?
+
+if [ $rolling -eq 0  ] ; then 
+	change_pkg_url_to_quarterly
+fi
+
 
 desktop=$(dialog --clear --title "Select Desktop" \
         --menu "Select desktop environment to be installed:" 0 0 0 \
