@@ -198,7 +198,7 @@ desktop=$(dialog --clear --title "Select Desktop" \
         "KDE"  "KDE (FBSD 12+ only)" \
         "LXDE"  "The Lightweight X Desktop Environment" \
 		"LXQT" "Lightweight QT Desktop (FBSD 12+ only)" \
-        "GNOME 3" "The modern GNOME desktop" \
+        "GNOME3" "The modern GNOME desktop" \
         "Xfce4" "Lightweight XFCE desktop" \
         "WindowMaker" "Bringing neXt back" \
         "awesome" "A tiling window manager" \
@@ -236,9 +236,9 @@ EOT
       DESKTOP_PGKS="lxde-meta lxde-common ${mywm}" 
       sysrc ${mywm}_enable="YES"
       ;;
-  GNOME 3)
+  GNOME3)
       gen_xinit "gnome-session"
-      DESKTOP_PGKS="gnome3" 
+      DESKTOP_PGKS="gnome42" 
       sysrc gnome_enable="YES"
       sysrc gdm_enable="YES"
       sysrc ${mywm}_enable="NO"
