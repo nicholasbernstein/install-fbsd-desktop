@@ -117,6 +117,15 @@ adjust_sysctl_buffers() {
 	grep "net.local.stream.sendspace" /etc/sysctl.conf || echo "net.local.stream.sendspace=65536" >> /etc/sysctl.conf
 }
 
+report(){
+	# $1 - testname, $2 - $?
+        SUCCESS="OK"
+        if [ $2 -eq 1 ] ; then
+                SUCCESS="FAILED"
+        fi
+        echo "$1: $SUCCESS"
+}
+
 # this is mainly just to make sure pkg has been bootstrapped
 export ASSUME_ALWAYS_YES=yes
 pkg update | tee -a installx.log
@@ -124,6 +133,8 @@ pkg update | tee -a installx.log
 # this will help with performance of desktop applications
 # and may help perf during install, so I'm doing it early
 adjust_sysctl_buffers
+report "add sync buffers" "$?"
+
 
 # Your user needs to be in the video group to use video acceleration
 default_user=`grep 1001 /etc/passwd | awk -F: '{ print $1 }'`
@@ -131,10 +142,13 @@ VUSER=`dialog --title "Video User" --clear \
         --inputbox "What user should be added to the video group?" 0 0  $default_user --stdout`
 
 pw groupmod video -m $VUSER && echo "added $VUSER to group: video"
+report "add $VUSER to video group" "$?"
 pw groupmod wheel -m $VUSER && echo "added $VUSER to group: wheel" 
+report "add $VUSER to wheel group" "$?"
 
 # probably not necessary, logging into an x session as root isn't recommended.
 pw groupmod video -m root
+report "add root to wheel group" "$?"
 
 # the following creates a .xinitrc file in the user's home directory that will launch
 # the installed windowmanager as well as allow the slim display manager to pass it as
@@ -162,9 +176,12 @@ set_login_mgr() {
 	else 
 		mywm="sddm"
 	fi
+	echo "login manager: $mywm"
+	export $mywm
 }
 
 set_login_mgr
+report "set login manager" "$?"
 
 dialog --title "Rolling Release" --yesno "Change pkg to use 'latest' packages instead of quarterly? Recommended for workstations. This prevents potential missing firefox package in 13.1 quarterly" 0 0
 
@@ -172,6 +189,7 @@ rolling=$?
 
 if [ $rolling -eq 0  ] ; then 
 	change_pkg_url_to_latest
+	report "quarterly->latest changed" "$?"
 fi
 
 
@@ -213,12 +231,12 @@ EOT
       DESKTOP_PGKS="lxqt ${mywm}" 
       sysrc ${mywm}_enable="YES"
       ;;
-  lxde)
+  LXDE)
       gen_xinit "startlxde"
       DESKTOP_PGKS="lxde-meta lxde-common ${mywm}" 
       sysrc ${mywm}_enable="YES"
       ;;
-  Gnome3)
+  GNOME 3)
       gen_xinit "gnome-session"
       DESKTOP_PGKS="gnome3" 
       sysrc gnome_enable="YES"
@@ -230,7 +248,7 @@ EOT
       DESKTOP_PGKS="xfce xfce4-goodies ${mywm}" 
       sysrc ${mywm}_enable="YES"
       ;;
-  mate)
+  MATE)
       gen_xinit "mate-session"
       echo $desktop
       DESKTOP_PGKS="mate ${mywm}" 
@@ -246,11 +264,13 @@ EOT
      ;;
 esac
 
+report "Desktop Selected" "$?"
 # The following are generally needed by most modern desktops
 
 sysrc dbus_enable="YES"
 #sysrc hald_enable="YES"
 
+report "DBus Enabled" "$?"
 grep "proc /proc procfs" /etc/fstab || echo "proc /proc procfs rw 0 0" >> /etc/fstab
 #!/bin/sh
 
