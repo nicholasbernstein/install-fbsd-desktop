@@ -7,7 +7,6 @@ grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
 
 change_pkg_url_to_quarterly(){
 	sed -i 'orig' 's/quarterly/latest/' /etc/pkg/FreeBSD.conf
-	grep url /etc/pkg/FreeBSD.conf
 }
 
 load_card_readers() {
@@ -158,7 +157,7 @@ dialog --title "Rolling Release" --yesno "Change pkg to use 'latest' packages in
 rolling=$?
 
 if [ $rolling -eq 0  ] ; then 
-	change_pkg_url_to_quarterly
+	change_pkg_url_to_quarterly()
 fi
 
 
