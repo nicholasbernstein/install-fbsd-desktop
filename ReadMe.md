@@ -1,6 +1,14 @@
 Strongly inspired by https://github.com/broozar/installDesktopFreeBSD
 
 Run the script as the root use as follows you can use: 
+
+```sh
+fetch http://a.freebsddesktop.xyz -o installx.sh
+sh installx.sh
+```
+
+or 
+
 ```sh
 fetch https://raw.githubusercontent.com/nicholasbernstein/install-fbsd-desktop/main/installx.sh -o - | sh
 ```
