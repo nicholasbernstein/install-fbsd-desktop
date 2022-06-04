@@ -1,54 +1,55 @@
 #!/bin/sh
 # Nick Bernstein https://github.com/nicholasbernstein/install-fbsd-desktop
 # most of this comes from the freebsd handbook 5.4.1. Quick Start x-config
-date > installx.log
+LOGFILE="installx.log"
+date > $LOGFILE
 
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
 
-change_pkg_url_to_latest(){
+function change_pkg_url_to_latest(){
 	sed -i 'orig' 's/quarterly/latest/' /etc/pkg/FreeBSD.conf
 	grep url /etc/pkg/FreeBSD.conf
 }
 
-load_card_readers() {
+function load_card_readers() {
 	# Load MMC/SD card-reader support
 	sysrc kld_list+="mmc"
 	sysrc kld_list+="mmcsd"
 	sysrc kld_list+="sdhci"
 }
 
-load_atapi() {
+function load_atapi() {
 	# Access ATAPI devices through the CAM subsystem
 	sysrc kld_list+="atapicam"
 }
 
-load_fuse() {
+function load_fuse() {
 	# Filesystems in Userspace
 	fuse_pkgs="fuse fuse-utils"
 	extra_pkgs="$extra_pkgs fusefs-lkl e2fsprogs"
 	sysrc kld_list+="fuse"
 }
 
-load_coretemp(){
+function load_coretemp(){
 	# Intel Core thermal sensors
 	sysrc kld_list+="coretemp"
 }
 
-load_amdtemp() {
+function load_amdtemp() {
 	# AMD K8, K10, K11 thermal sensors
 	if ( sysctl -a | grep -q -i "hw.model" | grep -q AMD ) ; then 
 		amdtemp_load="YES"
 	fi
 }
 
-load_bluetooth() { 
+function load_bluetooth() { 
 	# most common bluetooth adapters use this
 	sysrc kld_list+="ng_ubt"
 	sysrc hcsecd_enable="YES"
 	sysrc sdpd_enable="YES"
 }
 
-enable_ipfw_firewall() {
+function enable_ipfw_firewall() {
 	# this enables the ipfw firewall with the workstation profile
 	# it allows communication w/ other hosts on the network, outgoing traffic
 	# and any specific ports (ssh) we choose to enable
@@ -58,37 +59,37 @@ enable_ipfw_firewall() {
 	sysrc firewall_enable="YES"
 }
 
-enable_tmpfs() {
+function enable_tmpfs() {
 	# In-memory filesystems
 	sysrc kld_list+="tmpfs"
 }
 
-enable_async_io() {
+function enable_async_io() {
 	# Asynchronous I/O
 	sysrc kld_list+="aio"
 }
 
-enable_workstation_pwr_mgmnt() {
+function enable_workstation_pwr_mgmnt() {
 	# powerd: hiadaptive speed while on AC power, adaptive while on battery power
 	sysrc powerd_enable="YES"
 	sysrc powerd_flags="-a hiadaptive -b adaptive"
 }
 
-enable_webcam(){
+function enable_webcam(){
 	#this just enables the ability to use webcams
 	extra_pkgs="$extra_pkgs cuse4bsd webcamd"
 	sysrc kld_list+="cuse4bsd"
 	sysrc webcamd_enable="YES"
 }
 
-enable_cups(){
+function enable_cups() {
 	#this just enables the ability to use printers
 	extra_pkgs="$extra_pkgs cups"
 	sysrc cupsd_enable="YES"
 }
 
 
-linux-base-c7(){
+function linux-base-c7() {
 		sysrc kld_list+="linux"
 		kldload linux
 		sysrc kld_list+="linux64"
@@ -104,56 +105,59 @@ linux-base-c7(){
 			echo "tmpfs    /compat/linux/dev/shm  tmpfs rw,mode=1777 0 0" >> /etc/fstab
 }
 
-virtualbox-ose-additions() {
+function virtualbox-ose-additions() {
 		sysrc vboxguest_enable="YES"
 		sysrc vboxservice_enable="YES"
 		dialog --infobox "Please use VBoxSVGA as the virtualbox display driver for best performance." 0 0
 }
 
-adjust_sysctl_buffers() { 
+function adjust_sysctl_buffers() { 
 	sysctl net.local.stream.recvspace=65536
 	grep "net.local.stream.recvspace" /etc/sysctl.conf || echo "net.local.stream.recvspace=65536" >> /etc/sysctl.conf
 	sysctl net.local.stream.sendspace=65536
 	grep "net.local.stream.sendspace" /etc/sysctl.conf || echo "net.local.stream.sendspace=65536" >> /etc/sysctl.conf
 }
 
-report(){
+function report(){
 	# $1 - testname, $2 - $?
-        SUCCESS="OK"
+        STATUS="OK"
         if [ $2 -eq 1 ] ; then
-                SUCCESS="FAILED"
+                STATUS="FAILED"
         fi
-        echo "$1: $SUCCESS"
+        echo "$1: $STATUS" | tee $LOGFILE
 }
 
 # this is mainly just to make sure pkg has been bootstrapped
 export ASSUME_ALWAYS_YES=yes
-pkg update | tee -a installx.log
+pkg update | tee -a "$LOGFILE"
+report "pkg bootstrapping" "$?"
 
 # this will help with performance of desktop applications
 # and may help perf during install, so I'm doing it early
 adjust_sysctl_buffers
 report "add sync buffers" "$?"
 
+function add_user_to_video() {
+	# Your user needs to be in the video group to use video acceleration
+	default_user=`grep 1001 /etc/passwd | awk -F: '{ print $1 }'`
+	VUSER=`dialog --title "Video User" --clear  --inputbox "What user should be added to the video group?" 0 0  $default_user --stdout`
 
-# Your user needs to be in the video group to use video acceleration
-default_user=`grep 1001 /etc/passwd | awk -F: '{ print $1 }'`
-VUSER=`dialog --title "Video User" --clear \
-        --inputbox "What user should be added to the video group?" 0 0  $default_user --stdout`
+	pw groupmod video -m $VUSER && echo "added $VUSER to group: video"
+	report "add $VUSER to video group" "$?"
+	pw groupmod wheel -m $VUSER && echo "added $VUSER to group: wheel" 
+	report "add $VUSER to wheel group" "$?"
 
-pw groupmod video -m $VUSER && echo "added $VUSER to group: video"
-report "add $VUSER to video group" "$?"
-pw groupmod wheel -m $VUSER && echo "added $VUSER to group: wheel" 
-report "add $VUSER to wheel group" "$?"
+	# probably not necessary, logging into an x session as root isn't recommended.
+	pw groupmod video -m root
+	report "add root to wheel group" "$?"
+}
 
-# probably not necessary, logging into an x session as root isn't recommended.
-pw groupmod video -m root
-report "add root to wheel group" "$?"
+add_user_to_video
 
-# the following creates a .xinitrc file in the user's home directory that will launch
-# the installed windowmanager as well as allow the slim display manager to pass it as
-# an argument. 
 gen_xinit() {
+	# the following creates a .xinitrc file in the user's home directory that will launch
+	# the installed windowmanager as well as allow the slim display manager to pass it as
+	# an argument. 
 	if [ ! $1 ] ; then 
 		echo "argument needed by gen_xinit" 
 		return 0 
@@ -165,7 +169,7 @@ gen_xinit() {
 }
 
 
-# lets pick our desktop environment. SDDM is going to be used as the login 
+# pick our desktop environment. SDDM is going to be used as the login 
 # manager instead of slim since it "works out of the box" w/o .xinitrc stuff
 
 set_login_mgr() { 
@@ -408,17 +412,20 @@ echo $opt_activities | grep -q minimal_xorg && xorg_pkgs=$xorg_minimal
 
 # this is referred to during the package install, but needs to be up here so we can ask the user things.
 all_pkgs="$xorg_pkgs dbus $DESKTOP_PGKS $extra_pkgs $vc_pkgs $slim_extra_pkgs"
-echo "pkg install -y $all_pkgs" | tee -a installx.log
-pkg install -y $all_pkgs | tee -a installx.log
+echo "pkg install -y $all_pkgs" | tee -a "$LOGFILE"
+pkg install -y $all_pkgs | tee -a "$LOGFILE"
+report "package installation: " "$?"
 
 # post install stuff
 if [ "slim" = $mywm ] ; then
 	sed -i '' -E 's/^current_theme.+$/current_theme		slim-freebsd-dark-theme/' /usr/local/etc/slim.conf
+	report "slim.conf dark theme" "$?"
 fi
 
 # make sudo behave like default linux setup
 if [ $sudo_yes -eq 0 ] ; then
 	test -e /usr/local/etc/sudoers && echo "%wheel ALL=(ALL) ALL" >> /usr/local/etc/sudoers
+	report "created sudoers for wheel" "$?"
 fi
 
 # on 11.x w/ mate re-installing fixed a core-dump
@@ -436,5 +443,5 @@ fi
 
 
 welcome="Thanks for trying this setup script. If you're new to FreeBSD, it's worth noting that instead of trying to search google for how to do something, you probably want to check the handbook on freebsd.org or read the built-in man pages. \n\n Doing a 'man -k <topic>' will search for any matching documentation, and unlike some, ahem, other *nix operating systems, FreeBSD's built in documentation is really good.\n\n"
-dialog --msgbox "$welcome Hopefully that worked. You'll probably want to reboot at this point. Please report any problems to http://bug.freebsddesktop.xyz/" 0 0
+dialog --msgbox "$welcome Hopefully that worked. You'll probably want to reboot at this point. Please report any problems to http://bug.freebsddesktop.xyz/ or see the installx.log file created" 0 0
 
