@@ -1,55 +1,61 @@
 #!/bin/sh
 # Nick Bernstein https://github.com/nicholasbernstein/install-fbsd-desktop
 # most of this comes from the freebsd handbook 5.4.1. Quick Start x-config
+set -o pipefail
+#set -e
+#set -x
+
 LOGFILE="installx.log"
-date > $LOGFILE
+ERRLOG="installx.err"
+exec 2>"$ERRLOG"
+date > "$LOGFILE"
 
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
 
-function change_pkg_url_to_latest(){
+change_pkg_url_to_latest () {
 	sed -i 'orig' 's/quarterly/latest/' /etc/pkg/FreeBSD.conf
 	grep url /etc/pkg/FreeBSD.conf
 }
 
-function load_card_readers() {
+load_card_readers () {
 	# Load MMC/SD card-reader support
 	sysrc kld_list+="mmc"
 	sysrc kld_list+="mmcsd"
 	sysrc kld_list+="sdhci"
 }
 
-function load_atapi() {
+load_atapi() {
 	# Access ATAPI devices through the CAM subsystem
 	sysrc kld_list+="atapicam"
 }
 
-function load_fuse() {
+load_fuse() {
 	# Filesystems in Userspace
 	fuse_pkgs="fuse fuse-utils"
 	extra_pkgs="$extra_pkgs fusefs-lkl e2fsprogs"
 	sysrc kld_list+="fuse"
 }
 
-function load_coretemp(){
+load_coretemp(){
 	# Intel Core thermal sensors
 	sysrc kld_list+="coretemp"
 }
 
-function load_amdtemp() {
+load_amdtemp() {
 	# AMD K8, K10, K11 thermal sensors
 	if ( sysctl -a | grep -q -i "hw.model" | grep -q AMD ) ; then 
 		amdtemp_load="YES"
 	fi
 }
 
-function load_bluetooth() { 
+load_bluetooth() { 
 	# most common bluetooth adapters use this
 	sysrc kld_list+="ng_ubt"
 	sysrc hcsecd_enable="YES"
 	sysrc sdpd_enable="YES"
 }
 
-function enable_ipfw_firewall() {
+enable_ipfw_firewall() {
 	# this enables the ipfw firewall with the workstation profile
 	# it allows communication w/ other hosts on the network, outgoing traffic
 	# and any specific ports (ssh) we choose to enable
@@ -59,41 +65,41 @@ function enable_ipfw_firewall() {
 	sysrc firewall_enable="YES"
 }
 
-function enable_tmpfs() {
+enable_tmpfs() {
 	# In-memory filesystems
 	sysrc kld_list+="tmpfs"
 }
 
-function enable_async_io() {
+enable_async_io() {
 	# Asynchronous I/O
 	sysrc kld_list+="aio"
 }
 
-function enable_workstation_pwr_mgmnt() {
+enable_workstation_pwr_mgmnt() {
 	# powerd: hiadaptive speed while on AC power, adaptive while on battery power
 	sysrc powerd_enable="YES"
 	sysrc powerd_flags="-a hiadaptive -b adaptive"
 }
 
-function enable_webcam(){
+enable_webcam(){
 	#this just enables the ability to use webcams
-	extra_pkgs="$extra_pkgs cuse4bsd webcamd"
+	extra_pkgs="$extra_pkgs webcamd"
 	sysrc kld_list+="cuse4bsd"
 	sysrc webcamd_enable="YES"
 }
 
-function enable_cups() {
+enable_cups() {
 	#this just enables the ability to use printers
 	extra_pkgs="$extra_pkgs cups"
 	sysrc cupsd_enable="YES"
 }
 
 
-function linux-base-c7() {
+linuxBaseC7 () {
 		sysrc kld_list+="linux"
-		kldload linux
+		kldstat | grep -q linux || kldload linux
 		sysrc kld_list+="linux64"
-		kldload linux64
+		kldstat | grep -q linux64 || kldload linux64
 		sysrc linux_enable="YES"
 
 		mkdir -p /compat/linux/proc /compat/linux/dev/shm /compat/linux/sys
@@ -105,26 +111,26 @@ function linux-base-c7() {
 			echo "tmpfs    /compat/linux/dev/shm  tmpfs rw,mode=1777 0 0" >> /etc/fstab
 }
 
-function virtualbox-ose-additions() {
+virtualbox-ose-additions() {
 		sysrc vboxguest_enable="YES"
 		sysrc vboxservice_enable="YES"
 		dialog --infobox "Please use VBoxSVGA as the virtualbox display driver for best performance." 0 0
 }
 
-function adjust_sysctl_buffers() { 
+adjust_sysctl_buffers() { 
 	sysctl net.local.stream.recvspace=65536
 	grep "net.local.stream.recvspace" /etc/sysctl.conf || echo "net.local.stream.recvspace=65536" >> /etc/sysctl.conf
 	sysctl net.local.stream.sendspace=65536
 	grep "net.local.stream.sendspace" /etc/sysctl.conf || echo "net.local.stream.sendspace=65536" >> /etc/sysctl.conf
 }
 
-function report(){
+report(){
 	# $1 - testname, $2 - $?
         STATUS="OK"
-        if [ $2 -eq 1 ] ; then
+        if [ "$2" -eq 1 ] ; then
                 STATUS="FAILED"
         fi
-        echo "$1: $STATUS" | tee $LOGFILE
+        echo "$1: $STATUS" | tee -a $LOGFILE
 }
 
 # this is mainly just to make sure pkg has been bootstrapped
@@ -137,7 +143,7 @@ report "pkg bootstrapping" "$?"
 adjust_sysctl_buffers
 report "add sync buffers" "$?"
 
-function add_user_to_video() {
+add_user_to_video() {
 	# Your user needs to be in the video group to use video acceleration
 	default_user=`grep 1001 /etc/passwd | awk -F: '{ print $1 }'`
 	VUSER=`dialog --title "Video User" --clear  --inputbox "What user should be added to the video group?" 0 0  $default_user --stdout`
@@ -163,7 +169,9 @@ gen_xinit() {
 		return 0 
 	else
 		xinittxt="#!/bin/sh\n mywm="$1"\n if [ \$1 ] ; then\n \tcase \$1 in \n \t\tdefault) exec \$mywm ;;\n \t\t*) exec \$1 ;;\n \tesac\n else\n \texec \$mywm\n fi"
-		echo -e $xinittxt > /home/$VUSER/.xinitrc && chown $VUSER:$VUSER /home/$VUSER/.xinitrc
+		#echo -e $xinittxt > /home/$VUSER/.xinitrc && chown $VUSER:$VUSER /home/$VUSER/.xinitrc
+		echo -e $xinittxt > /home/$VUSER/.xinitrc && chown $VUSER /home/$VUSER/.xinitrc
+		test -d /etc/skel || mkdir /etc/skel
 		echo -e $xinittxt > /etc/skel/.xinitrc
 	fi
 }
@@ -276,16 +284,14 @@ sysrc dbus_enable="YES"
 
 report "DBus Enabled" "$?"
 grep "proc /proc procfs" /etc/fstab || echo "proc /proc procfs rw 0 0" >> /etc/fstab
-#!/bin/sh
 
 # A number of the more lightweight desktops don't include everything you need
 # and anyone coming from linux probably wants bash, sudo & vim. Let's make
 # the transition easy for them
-
 extra_pkgs=$(dialog --checklist "Select additional packages to install:" 0 0 0 \
 firefox "Firefox Web browser" on \
 bash "GNU Bourne-Again SHell" on \
-vim-tiny "VI Improved" on \
+vim "VI Improved" on \
 git-lite "Lightweight Git client" on \
 sudo "Superuser do" on \
 thunderbird "Thunderbird Email Client" off \
@@ -299,11 +305,12 @@ linux_base-c7 "CentOS v7 linux binary compatiblity layer" off \
 virtualbox-ose-additions "VirtualBox guest additions" off \
 --stdout)
 
+echo "Extra packages:" "$extra_packages" | tee -a "$LOGFILE"
 
 
 # by default install the full xorg, but if xorg_minimal is set, override it
 
-echo $extra_pkgs | grep -q linux_base-c7 && linux_base-c7
+echo $extra_pkgs | grep -q linux_base-c7 && linuxBaseC7
 echo $extra_pkgs | grep -q virtualbox-ose-additions && virtualbox-ose-additions
 
 # Honestly, shouldn't graphic card configuration be done in the base installer? 
@@ -357,7 +364,6 @@ if [ $install_dv_drivers -eq 0  ] ; then
 
 fi 
 
-
 # check to see if we should set the user shell to bash
 if ( echo $all_pkgs | grep -q "bash" ) ; then
 	dialog --title "Bash" --yesno "Would you like to set the $VUSER user's default shell to bash?" --stdout 0 0
@@ -380,6 +386,7 @@ opt_activities=$(dialog --checklist "Select additional options" 0 0 0 \
 	enable_tmpfs "enable in-mem tempfs" on \
 	enable_cups "printing" off \
 	enable_webcam "enables webcams to be used" off \
+	enable_ipfw_firewall "enables workstation firewall profile + allow ssh" off \
 	enable_async_io "enable async io for better perf" on \
 	enable_workstation_pwr_mgmnt "change pwr on battery/plugged in" on \
 	load_bluetooth "enable bluetooth kernel modules" off \
@@ -397,11 +404,11 @@ xorg_pkgs="xorg"
 
 echo $opt_activities | grep -q load_card_readers && load_card_readers
 echo $opt_activities | grep -q load_atapi && load_card_readers
-echo $opt_activities | grep -q load_fuse && load_card_readers
+echo $opt_activities | grep -q load_fuse && load_fuse
 echo $opt_activities | grep -q load_coretemp && load_card_readers
 echo $opt_activities | grep -q load_amdtemp && load_card_readers
 echo $opt_activities | grep -q load_bluetooth && load_card_readers
-echo $opt_activities | grep -q enable_ipfw_firewall && load_card_readers
+echo $opt_activities | grep -q enable_ipfw_firewall && enable_ipfw_firewall
 echo $opt_activities | grep -q enable_tmpfs && enable_tmpfs
 echo $opt_activities | grep -q enable_async_io && enable_async_io
 echo $opt_activities | grep -q enable_workstation_pwr_mgmnt && enable_workstation_pwr_mgmnt
