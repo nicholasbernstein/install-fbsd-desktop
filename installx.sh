@@ -3,7 +3,8 @@
 # most of this comes from the freebsd handbook 5.4.1. Quick Start x-config
 set -o pipefail
 #set -e
-#set -x
+set -x
+PS4="$0 $LINENO >"
 
 LOGFILE="installx.log"
 ERRLOG="installx.err"
@@ -181,25 +182,25 @@ gen_xinit() {
 # manager instead of slim since it "works out of the box" w/o .xinitrc stuff
 
 set_login_mgr() { 
-	if (uname -r | grep "11" >/dev/null) ; then
+	mywm="sddm"
+	if ( uname -r | grep -q  "11" ) ; then
 		mywm="slim"
 		slim_extra_pkgs="slim-freebsd-dark-theme"
 		pwd_mkdb -p /etc/master.passwd
-	else 
-		mywm="sddm"
 	fi
 	echo "login manager: $mywm"
-	export $mywm
+	sysrc "${mywm}_enable"="YES"
 }
-
+set -x
 set_login_mgr
 report "set login manager" "$?"
+set +x
 
 dialog --title "Rolling Release" --yesno "Change pkg to use 'latest' packages instead of quarterly? Recommended for workstations. This prevents potential missing firefox package in 13.1 quarterly" 0 0
 
 rolling=$?
 
-if [ $rolling -eq 0  ] ; then 
+if [ "$rolling" -eq 0  ] ; then 
 	change_pkg_url_to_latest
 	report "quarterly->latest changed" "$?"
 fi
@@ -320,7 +321,7 @@ echo $extra_pkgs | grep -q virtualbox-ose-additions && virtualbox-ose-additions
 dialog --title "Graphics Drivers" --yesno "Would you like to try to install the drivers for your video card?\n\nPlease refer to freebsd handbook for more details:\nhttps://www.freebsd.org/doc/handbook/x-config.html" 0 0
 install_dv_drivers=$?
 
-if [ $install_dv_drivers -eq 0  ] ; then 
+if [ "$install_dv_drivers" -eq 0  ] ; then 
 
 	card=$(dialog --checklist "Select additional packages to install:" 0 0 0 \
 	i915kms "most Intel graphics cards" off \
@@ -418,7 +419,7 @@ echo $opt_activities | grep -q enable_webcam && enable_webcam
 echo $opt_activities | grep -q minimal_xorg && xorg_pkgs=$xorg_minimal
 
 # this is referred to during the package install, but needs to be up here so we can ask the user things.
-all_pkgs="$xorg_pkgs dbus $DESKTOP_PGKS $extra_pkgs $vc_pkgs $slim_extra_pkgs"
+all_pkgs="$xorg_pkgs dbus $DESKTOP_PGKS $extra_pkgs $vc_pkgs $mywm $slim_extra_pkgs"
 echo "pkg install -y $all_pkgs" | tee -a "$LOGFILE"
 pkg install -y $all_pkgs | tee -a "$LOGFILE"
 report "package installation: " "$?"
@@ -430,7 +431,7 @@ if [ "slim" = $mywm ] ; then
 fi
 
 # make sudo behave like default linux setup
-if [ $sudo_yes -eq 0 ] ; then
+if [ "$sudo_yes" -eq 0 ] ; then
 	test -e /usr/local/etc/sudoers && echo "%wheel ALL=(ALL) ALL" >> /usr/local/etc/sudoers
 	report "created sudoers for wheel" "$?"
 fi
@@ -443,7 +444,7 @@ if [ $desktop = "mate" ] ; then
 fi
 
 # Set the user's shell to bash
-if [ $bash_yes -eq 0 ] ; then
+if [ "$bash_yes" -eq 0 ] ; then
 	chpass -s /usr/local/bin/bash $VUSER || echo "failed to change shell to bash"
 fi
 
