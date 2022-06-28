@@ -34,7 +34,7 @@ load_fuse() {
 	# Filesystems in Userspace
 	fuse_pkgs="fuse fuse-utils"
 	extra_pkgs="$extra_pkgs fusefs-lkl e2fsprogs"
-	sysrc kld_list+="fuse"
+	sysrc kld_list+="fusefs"
 }
 
 load_coretemp(){
