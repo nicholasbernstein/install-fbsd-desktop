@@ -20,9 +20,11 @@ date > "$LOGFILE"
 #   INSTALLX_ROLLING       yes|no — use pkg "latest" (default: yes)
 #   INSTALLX_EXTRA_PKGS    space-separated packages (default: bash sudo)
 #   INSTALLX_OPT           space-separated option names matching the dialog checklist (see below)
-#   INSTALLX_GRAPHICS      yes|no — try to install GPU drivers (default: no)
-#   INSTALLX_VIDEO_CARD    space-separated: i915kms radeonkms amdgpu nvidia nvidia_modeset
-#                          vesa scfb vmwgfx (if GRAPHICS=yes). Matches FreeBSD handbook names.
+#   INSTALLX_GRAPHICS      yes|no|auto — install GPU drivers (default: no).
+#                          auto = yes + pciconf detection when VIDEO_CARD unset
+#   INSTALLX_VIDEO_CARD    space-separated driver keys, or "auto" to detect via pciconf.
+#                          Keys: i915kms amdgpu radeonkms nvidia nvidia_modeset
+#                          nvidia470 nvidia390 nvidia340 vesa scfb vmwgfx
 #   INSTALLX_BASH_SHELL    yes|no — set user shell to bash (default: yes if bash installed)
 #   INSTALLX_SUDO_WHEEL    yes|no — allow %wheel to sudo (default: yes if sudo installed)
 #
@@ -515,23 +517,18 @@ echo $extra_pkgs | grep -q virtualbox-ose-additions && enable_virtualbox_ose_add
 # ---------------------------------------------------------------------------
 # Graphics drivers (FreeBSD handbook §X11 / graphics drivers)
 #
-# drm-kmod is a metaport: pkg resolves the correct drm-NN-kmod build for the
-# running FreeBSD major version (14.x vs 15.x). Module names below match the
-# handbook (short kld names, not full /boot/modules paths).
-#
-# NVIDIA on FreeBSD 14/15: prefer nvidia-drm-kmod + nvidia-drm + modeset sysctl
-# for KMS/PRIME/Wayland; nvidia_modeset keeps the older modeset-only stack.
-#
-# X11-only DDX packages (xf86-video-*) are skipped for Wayland sessions.
-# Post-install steps (e.g. nvidia-xconfig) run after pkg install.
-# dialog --checklist may return multiple selections; we process each token.
+# Flow: detect GPUs via pciconf → pre-check checklist (or auto in CI) →
+# install packages + enable klds. drm-kmod is a metaport (versioned per
+# FreeBSD major). NVIDIA default is nvidia-drm-kmod; legacy branches
+# (470/390/340) remain available for older cards.
 # ---------------------------------------------------------------------------
 vc_pkgs=""
 vc_post_nvidia_xconfig=0
 vc_selected=""
+DETECTED_GPUS=""
+DETECTED_HINT=""
 
 graphics_append_pkg() {
-	# $1... packages to add to vc_pkgs if not already present
 	for _p in "$@" ; do
 		case " ${vc_pkgs} " in
 			*" ${_p} "*) ;;
@@ -542,13 +539,11 @@ graphics_append_pkg() {
 }
 
 graphics_enable_kld() {
-	# handbook style: sysrc kld_list+=modulename
 	sysrc kld_list+="$1"
 	echo "graphics: kld_list+=$1" | tee -a "$LOGFILE"
 }
 
 graphics_loader_conf() {
-	# $1 = key=value for /boot/loader.conf (idempotent)
 	_line="$1"
 	_key=$(echo "$_line" | cut -d= -f1)
 	if [ -n "$_key" ] && ! grep -q "^${_key}=" /boot/loader.conf 2>/dev/null ; then
@@ -557,34 +552,115 @@ graphics_loader_conf() {
 	fi
 }
 
+graphics_checklist_state() {
+	# echo "on" if $1 is in DETECTED_GPUS, else "off"
+	case " ${DETECTED_GPUS} " in
+		*" $1 "*) echo on ;;
+		*) echo off ;;
+	esac
+}
+
+# Probe pciconf for display-class devices and map PCI vendors → driver keys.
+# Sets DETECTED_GPUS (space-separated) and DETECTED_HINT (human summary).
+graphics_detect() {
+	DETECTED_GPUS=""
+	DETECTED_HINT=""
+	_pci_raw=$(pciconf -lv 2>/dev/null || true)
+	_found=""
+
+	# Device header lines look like:
+	#   vgapci0@pci0:0:2:0:  class=0x030000 ... vendor=0x8086 device=0x46a6 ...
+	# class 0x03xxxx = display
+	_found=$(echo "$_pci_raw" | awk '
+		/^[a-zA-Z0-9]+@pci/ && /class=0x03/ {
+			if ($0 ~ /vendor=0x8086/) print "i915kms"
+			else if ($0 ~ /vendor=0x1002/) print "amdgpu"
+			else if ($0 ~ /vendor=0x10de/) print "nvidia"
+			else if ($0 ~ /vendor=0x15ad/) print "vmwgfx"
+			else if ($0 ~ /vendor=0x80ee/) print "vbox"
+			else if ($0 ~ /vendor=0x1234/ || $0 ~ /vendor=0x1af4/ || $0 ~ /vendor=0x1b36/) print "virtio"
+			else print "unknown"
+		}
+	')
+
+	# Also match "class = display" style blocks if header lacked class=0x03
+	if [ -z "$_found" ] ; then
+		_found=$(echo "$_pci_raw" | awk '
+			BEGIN { RS=""; ORS="\n" }
+			/class[[:space:]]*=[[:space:]]*display/ || /VGA compatible/ {
+				if ($0 ~ /vendor=0x8086/ || $0 ~ /Intel/) print "i915kms"
+				else if ($0 ~ /vendor=0x1002/ || $0 ~ /AMD/ || $0 ~ /ATI/) print "amdgpu"
+				else if ($0 ~ /vendor=0x10de/ || $0 ~ /NVIDIA/) print "nvidia"
+				else if ($0 ~ /vendor=0x15ad/ || $0 ~ /VMware/) print "vmwgfx"
+				else print "unknown"
+			}
+		')
+	fi
+
+	for _g in $_found ; do
+		case "$_g" in
+			i915kms|amdgpu|nvidia|vmwgfx)
+				case " ${DETECTED_GPUS} " in
+					*" ${_g} "*) ;;
+					*) DETECTED_GPUS="${DETECTED_GPUS} ${_g}" ;;
+				esac
+				;;
+			vbox|virtio)
+				# Prefer console framebuffer for common hypervisors unless user overrides
+				_fb=scfb
+				if command -v sysctl >/dev/null 2>&1 ; then
+					_boot=$(sysctl -n machdep.bootmethod 2>/dev/null || true)
+					case "$_boot" in
+						BIOS|bios) _fb=vesa ;;
+					esac
+				fi
+				case " ${DETECTED_GPUS} " in
+					*" ${_fb} "*) ;;
+					*) DETECTED_GPUS="${DETECTED_GPUS} ${_fb}" ;;
+				esac
+				;;
+			unknown)
+				;;
+		esac
+	done
+	DETECTED_GPUS=$(echo "$DETECTED_GPUS" | sed 's/^ *//')
+
+	# No known vendor: fall back by firmware boot method (handbook SCFB vs VESA)
+	if [ -z "$DETECTED_GPUS" ] ; then
+		_boot=$(sysctl -n machdep.bootmethod 2>/dev/null || echo unknown)
+		case "$_boot" in
+			UEFI|uefi) DETECTED_GPUS="scfb" ;;
+			BIOS|bios) DETECTED_GPUS="vesa" ;;
+			*) DETECTED_GPUS="" ;;
+		esac
+		echo "graphics: no PCI vendor match; bootmethod=${_boot} → suggest [${DETECTED_GPUS}]" | tee -a "$LOGFILE"
+	fi
+
+	DETECTED_HINT=$(echo "$_pci_raw" | grep -E "vendor=0x|device=|class=0x03|class[[:space:]]*=[[:space:]]*display" | head -n 12 | tr '\n' ' ')
+	[ -z "$DETECTED_HINT" ] && DETECTED_HINT="(no display PCI devices found)"
+	echo "graphics: detected drivers [${DETECTED_GPUS}]" | tee -a "$LOGFILE"
+	echo "graphics: pciconf hint: ${DETECTED_HINT}" | tee -a "$LOGFILE"
+}
+
 # Apply one GPU selection (handbook-aligned)
 graphics_select() {
 	_gpu="$1"
 	case "$_gpu" in
 		i915kms)
-			# Intel: drm-kmod → i915kms
 			graphics_append_pkg drm-kmod
 			graphics_enable_kld i915kms
 			;;
 		amdgpu)
-			# Modern AMD (HD7000/Tahiti and newer)
+			# Modern AMD — modesetting usually enough; skip vendor DDX by default
 			graphics_append_pkg drm-kmod
-			if [ "$NEED_XORG" = "yes" ] ; then
-				graphics_append_pkg xf86-video-amdgpu
-			fi
 			graphics_enable_kld amdgpu
 			;;
 		radeonkms)
-			# Older AMD (pre-HD7000)
 			graphics_append_pkg drm-kmod
-			if [ "$NEED_XORG" = "yes" ] ; then
-				graphics_append_pkg xf86-video-ati
-			fi
 			graphics_enable_kld radeonkms
 			;;
 		nvidia)
-			# Current handbook default: nvidia-drm-kmod + nvidia-drm + modeset
-			# Works for X11 and Wayland/PRIME on FreeBSD 14+
+			# Current handbook default (KMS / PRIME / Wayland)
 			graphics_append_pkg nvidia-drm-kmod
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg nvidia-settings nvidia-xconfig
@@ -594,7 +670,6 @@ graphics_select() {
 			graphics_loader_conf 'hw.nvidiadrm.modeset="1"'
 			;;
 		nvidia_modeset)
-			# Older stack without DRM KMS (pre-nvidia-drm path)
 			graphics_append_pkg nvidia-driver
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg nvidia-settings nvidia-xconfig
@@ -602,8 +677,33 @@ graphics_select() {
 			fi
 			graphics_enable_kld nvidia-modeset
 			;;
+		nvidia470|nvidia_470)
+			# Legacy branch for older cards (handbook table)
+			graphics_append_pkg nvidia-driver-470
+			if [ "$NEED_XORG" = "yes" ] ; then
+				graphics_append_pkg nvidia-xconfig
+				vc_post_nvidia_xconfig=1
+			fi
+			graphics_enable_kld nvidia-modeset
+			;;
+		nvidia390|nvidia_390)
+			graphics_append_pkg nvidia-driver-390
+			if [ "$NEED_XORG" = "yes" ] ; then
+				graphics_append_pkg nvidia-xconfig
+				vc_post_nvidia_xconfig=1
+			fi
+			graphics_enable_kld nvidia-modeset
+			;;
+		nvidia340|nvidia_340)
+			# Pre-390: load nvidia (not modeset); needs legacy console/X in some cases
+			graphics_append_pkg nvidia-driver-340
+			if [ "$NEED_XORG" = "yes" ] ; then
+				graphics_append_pkg nvidia-xconfig
+				vc_post_nvidia_xconfig=1
+			fi
+			graphics_enable_kld nvidia
+			;;
 		vesa)
-			# BIOS / CSM fallback — X11 only
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg xf86-video-vesa
 			else
@@ -611,7 +711,6 @@ graphics_select() {
 			fi
 			;;
 		scfb)
-			# UEFI framebuffer — X11 driver package; module often in base
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg xf86-video-scfb
 			else
@@ -619,7 +718,6 @@ graphics_select() {
 			fi
 			;;
 		vmwgfx)
-			# VMware SVGA
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg xf86-video-vmware
 			fi
@@ -633,40 +731,72 @@ graphics_select() {
 	esac
 }
 
+# Warn if multiple conflicting NVIDIA stacks were chosen
+graphics_warn_nvidia_conflict() {
+	_n=0
+	for _t in nvidia nvidia_modeset nvidia470 nvidia_470 nvidia390 nvidia_390 nvidia340 nvidia_340 ; do
+		case " ${vc_selected} " in
+			*" ${_t} "*) _n=$((_n + 1)) ;;
+		esac
+	done
+	if [ "$_n" -gt 1 ] ; then
+		echo "graphics: WARNING: multiple NVIDIA stacks selected (${vc_selected}); pick one family" | tee -a "$LOGFILE"
+	fi
+}
+
 if is_noninteractive ; then
 	case "${INSTALLX_GRAPHICS:-no}" in
-		[Yy][Ee][Ss]|1|true|TRUE) install_dv_drivers=0 ;;
+		[Yy][Ee][Ss]|1|true|TRUE|auto|AUTO) install_dv_drivers=0 ;;
 		*) install_dv_drivers=1 ;;
 	esac
 else
-	dialog --title "Graphics Drivers" --yesno "Would you like to try to install the drivers for your video card?\n\nSelections follow the FreeBSD handbook (drm-kmod / nvidia-drm-kmod).\nSee: https://www.freebsd.org/doc/handbook/x-config.html" 0 0
+	dialog --title "Graphics Drivers" --yesno "Would you like to try to install the drivers for your video card?\n\nThe next screen pre-selects drivers from pciconf (you can change them).\nSee: https://www.freebsd.org/doc/handbook/x-config.html" 0 0
 	install_dv_drivers=$?
 fi
 
 if [ "$install_dv_drivers" -eq 0  ] ; then 
 
+	graphics_detect
+
 	if is_noninteractive ; then
 		card="${INSTALLX_VIDEO_CARD:-}"
+		case "$card" in
+			""|auto|AUTO)
+				card="$DETECTED_GPUS"
+				echo "noninteractive: auto GPU selection → [$card]" | tee -a "$LOGFILE"
+				;;
+		esac
 	else
-		# Show pciconf hint in the menu title when possible
-		_pcihint=$(pciconf -lv 2>/dev/null | grep -B3 display | head -n 6 | tr '\n' ' ')
-		card=$(dialog --checklist "Select GPU driver(s) to install (multi-select OK).\n${_pcihint}" 0 0 0 \
-		i915kms "Intel (drm-kmod → i915kms)" off \
-		amdgpu "AMD modern / GCN+ (drm-kmod → amdgpu)" off \
-		radeonkms "AMD legacy pre-HD7000 (drm-kmod → radeonkms)" off \
-		nvidia "NVIDIA current (nvidia-drm-kmod, KMS/Wayland)" off \
-		nvidia_modeset "NVIDIA modeset-only (no nvidia-drm)" off \
-		scfb "UEFI framebuffer (X11; prefer if unknown GPU + UEFI)" off \
-		vesa "VESA BIOS fallback (X11; BIOS/CSM boot)" off \
-		vmwgfx "VMware SVGA" off \
+		# Pre-check detected drivers; user can still change multi-select
+		_def_i915=$(graphics_checklist_state i915kms)
+		_def_amd=$(graphics_checklist_state amdgpu)
+		_def_radeon=off
+		_def_nvidia=$(graphics_checklist_state nvidia)
+		_def_vmw=$(graphics_checklist_state vmwgfx)
+		_def_scfb=$(graphics_checklist_state scfb)
+		_def_vesa=$(graphics_checklist_state vesa)
+		# radeonkms never auto-on (AMD defaults to amdgpu); user may enable for pre-HD7000
+
+		card=$(dialog --checklist "GPU drivers (detected: ${DETECTED_GPUS:-none}). Multi-select OK for hybrid/PRIME.\n${DETECTED_HINT}" 0 0 0 \
+		i915kms "Intel (drm-kmod → i915kms)" "${_def_i915}" \
+		amdgpu "AMD modern (drm-kmod → amdgpu)" "${_def_amd}" \
+		radeonkms "AMD legacy pre-HD7000 (drm-kmod → radeonkms)" "${_def_radeon}" \
+		nvidia "NVIDIA current (nvidia-drm-kmod, KMS/Wayland)" "${_def_nvidia}" \
+		nvidia_modeset "NVIDIA latest modeset-only (no drm)" off \
+		nvidia470 "NVIDIA legacy 470.xx branch" off \
+		nvidia390 "NVIDIA legacy 390.xx branch" off \
+		nvidia340 "NVIDIA legacy 340.xx branch" off \
+		scfb "UEFI framebuffer (X11)" "${_def_scfb}" \
+		vesa "VESA BIOS fallback (X11)" "${_def_vesa}" \
+		vmwgfx "VMware SVGA" "${_def_vmw}" \
 		other "None of the above / show pciconf only" off \
 		--stdout)
 	fi
 
-	# Normalize dialog checklist output (may be quoted / multi-value)
 	card=$(echo "$card" | tr -d '"' | tr ',' ' ')
 	vc_selected="$card"
 	echo "graphics: selected [$card] session=$SESSION_TYPE FreeBSD=$(uname -r)" | tee -a "$LOGFILE"
+	graphics_warn_nvidia_conflict
 
 	_any=0
 	for _gpu in $card ; do
@@ -684,11 +814,10 @@ if [ "$install_dv_drivers" -eq 0  ] ; then
 		echo "graphics: pciconf display devices:" | tee -a "$LOGFILE"
 		echo "$pciconf_out" | tee -a "$LOGFILE"
 		if ! is_noninteractive ; then
-			dialog --msgbox "No specific driver applied (or 'other' selected).\n\npciconf -lv | grep -B3 display:\n\n${pciconf_out}\n\nSee the FreeBSD handbook graphics drivers section." 0 0
+			dialog --msgbox "No specific driver applied (or 'other' selected).\n\nDetected: ${DETECTED_GPUS:-none}\n\npciconf:\n${pciconf_out}\n\nSee the FreeBSD handbook graphics drivers section." 0 0
 		fi
 	fi
 
-	# Optional firmware helper (FreeBSD base on recent releases)
 	if command -v fwget >/dev/null 2>&1 ; then
 		echo "graphics: running fwget to fetch device firmware (if any)" | tee -a "$LOGFILE"
 		fwget 2>/dev/null || true
