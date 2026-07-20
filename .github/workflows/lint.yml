@@ -27,3 +27,14 @@ jobs:
             bash -n "$f"
           done
           echo "syntax OK"
+
+      - name: FreeBSD release matrix script
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/freebsd-supported-releases.py
+          echo "==> live discovery"
+          python3 scripts/freebsd-supported-releases.py --github-matrix
+          echo "==> fallback-only"
+          python3 scripts/freebsd-supported-releases.py --fallback-only --lines
+          echo "==> pin"
+          python3 scripts/freebsd-supported-releases.py --pin 14.4 --github-matrix

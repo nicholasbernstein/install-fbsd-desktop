@@ -49,6 +49,13 @@ Each desktop has its own GitHub Actions workflow under `.github/workflows/deskto
 They all call the shared runner in `smoketest-reusable.yml` (FreeBSD VM → noninteractive
 `installx.sh` → `test_installx.sh`).
 
+**FreeBSD versions:** before each smoke matrix runs, `scripts/freebsd-supported-releases.py`
+builds the release list from [FreeBSD supported releases](https://www.freebsd.org/security/#sup)
+(intersected with [vmactions/freebsd-vm](https://github.com/vmactions/freebsd-vm) x86_64
+images). Offline fallback: `scripts/data/freebsd-releases-fallback.json` (refreshed weekly
+by `update-freebsd-releases.yml`). Pin a single version with the reusable workflow input
+`release: "14.4"`.
+
 | Workflow | Desktop | On push | Weekly | Manual |
 |----------|---------|---------|--------|--------|
 | `desktop-awesome.yml` | awesome | yes | yes | yes |

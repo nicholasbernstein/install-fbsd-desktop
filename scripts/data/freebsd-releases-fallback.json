@@ -1,0 +1,9 @@
+{
+  "source": "https://www.freebsd.org/security/",
+  "comment": "Offline fallback when live discovery fails. Refresh with: python3 scripts/freebsd-supported-releases.py --write-fallback",
+  "releases": [
+    "15.1",
+    "15.0",
+    "14.4"
+  ]
+}

@@ -1,5 +1,9 @@
 # Reusable FreeBSD desktop install smoketest.
 # Called by per-desktop workflows (desktop-*.yml). Do not trigger directly.
+#
+# FreeBSD release matrix is resolved at runtime (job "resolve-releases") from
+# https://www.freebsd.org/security/#sup via scripts/freebsd-supported-releases.py,
+# intersected with vmactions/freebsd-vm x86_64 images. Pin with inputs.release.
 
 name: Smoketest (reusable)
 
@@ -11,10 +15,10 @@ on:
         required: true
         type: string
       release:
-        description: "FreeBSD release for vmactions/freebsd-vm"
+        description: "Optional pin (e.g. 14.4). Empty = all FreeBSD-supported releases"
         required: false
         type: string
-        default: "14.4"
+        default: ""
       minimal_xorg:
         description: "Install xorg-minimal instead of full xorg"
         required: false
@@ -26,23 +30,63 @@ on:
         type: string
         default: "8192"
       timeout_minutes:
-        description: "Job timeout"
+        description: "Job timeout per matrix cell"
         required: false
         type: number
         default: 120
 
 jobs:
-  smoketest:
-    name: ${{ inputs.desktop }} on FreeBSD ${{ inputs.release }}
+  # -------------------------------------------------------------------------
+  # Runs first: build the FreeBSD version matrix for downstream smoke jobs
+  # -------------------------------------------------------------------------
+  resolve-releases:
+    name: Resolve FreeBSD releases
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+      releases: ${{ steps.gen.outputs.releases }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ${{ inputs.desktop }} via installx.sh
+      - name: Generate release matrix
+        id: gen
+        env:
+          PIN_RELEASE: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PIN_RELEASE}" ]; then
+            echo "Pinning FreeBSD release: ${PIN_RELEASE}"
+            MATRIX=$(python3 scripts/freebsd-supported-releases.py --pin "${PIN_RELEASE}" --github-matrix)
+          else
+            echo "Discovering FreeBSD-supported releases (security.freebsd.org)…"
+            MATRIX=$(python3 scripts/freebsd-supported-releases.py --github-matrix)
+          fi
+          # Compact single-line JSON for fromJSON()
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+          # Human-readable list for logs / optional consumers
+          RELEASES=$(python3 -c 'import json,sys; print(" ".join(json.loads(sys.argv[1])["release"]))' "${MATRIX}")
+          echo "releases=${RELEASES}" >> "$GITHUB_OUTPUT"
+          echo "Resolved matrix: ${MATRIX}"
+          echo "Releases: ${RELEASES}"
+
+  # -------------------------------------------------------------------------
+  # One VM job per FreeBSD release × desktop
+  # -------------------------------------------------------------------------
+  smoketest:
+    name: ${{ inputs.desktop }} / FreeBSD ${{ matrix.release }}
+    needs: resolve-releases
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve-releases.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ${{ inputs.desktop }} on FreeBSD ${{ matrix.release }}
         uses: vmactions/freebsd-vm@v1
         with:
-          release: ${{ inputs.release }}
+          release: ${{ matrix.release }}
           usesh: true
           mem: ${{ inputs.mem }}
           copyback: true
@@ -74,7 +118,6 @@ jobs:
             touch /etc/fstab
             touch /etc/sysctl.conf
 
-            # Shared opts that exercise fuse/ipfw checks in test_installx.sh
             BASE_OPT="load_card_readers load_atapi load_fuse enable_tmpfs enable_async_io enable_workstation_pwr_mgmnt enable_ipfw_firewall"
             if [ "${{ inputs.minimal_xorg }}" = "true" ]; then
               INSTALLX_OPT="$BASE_OPT minimal_xorg"
@@ -93,7 +136,7 @@ jobs:
             export INSTALLX_BASH_SHELL=yes
             export INSTALLX_SUDO_WHEEL=yes
 
-            echo "==== installx.sh desktop=$INSTALLX_DESKTOP minimal_xorg=${{ inputs.minimal_xorg }} ===="
+            echo "==== installx.sh desktop=$INSTALLX_DESKTOP release=${{ matrix.release }} ===="
             if ! sh ./installx.sh; then
               echo "installx.sh failed; dumping logs" >&2
               tail -n 200 installx.log 2>/dev/null || true
@@ -118,13 +161,13 @@ jobs:
               exit 1
             fi
 
-            echo "==== Smoketest passed: ${{ inputs.desktop }} ===="
+            echo "==== Smoketest passed: ${{ inputs.desktop }} on FreeBSD ${{ matrix.release }} ===="
 
       - name: Upload install logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: installx-logs-${{ inputs.desktop }}-${{ inputs.release }}-${{ github.run_id }}
+          name: installx-logs-${{ inputs.desktop }}-${{ matrix.release }}-${{ github.run_id }}
           path: |
             installx.log
             installx.err
