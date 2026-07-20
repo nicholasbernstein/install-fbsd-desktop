@@ -139,19 +139,29 @@ jobs:
             export INSTALLX_BASH_SHELL=yes
             export INSTALLX_SUDO_WHEEL=yes
 
+            echo "==== FreeBSD / pkg context ===="
+            freebsd-version || true
+            uname -a || true
+            echo "---- pkg urls ----"
+            grep -r url /etc/pkg /usr/local/etc/pkg 2>/dev/null || true
+            pkg -vv 2>/dev/null | grep -E 'url|ABI|OSVERSION' | head -n 30 || true
+
             echo "==== installx.sh desktop=$INSTALLX_DESKTOP release=${{ matrix.release }} ===="
             set +e
             sh ./installx.sh
             install_rc=$?
             set -e
             echo "==== installx.log (tail) ===="
-            tail -n 150 installx.log 2>/dev/null || echo "(no installx.log)"
+            tail -n 200 installx.log 2>/dev/null || echo "(no installx.log)"
             echo "==== installx.err (tail) ===="
-            tail -n 150 installx.err 2>/dev/null || echo "(no installx.err)"
+            tail -n 200 installx.err 2>/dev/null || echo "(no installx.err)"
             if [ "$install_rc" -ne 0 ]; then
               echo "installx.sh failed with status $install_rc" >&2
-              echo "---- last pkg-related log lines ----"
-              grep -iE 'pkg |package|No packages|not found|FATAL|error' installx.log installx.err 2>/dev/null | tail -n 50 || true
+              echo "---- pkg / FATAL lines ----"
+              grep -iE 'pkg:|FATAL|No packages|not in catalog|missing|latest|quarterly|kde|plasma' installx.log installx.err 2>/dev/null | tail -n 80 || true
+              echo "---- try pkg search kde/plasma6 ----"
+              pkg search -q kde 2>/dev/null | head -n 20 || true
+              pkg search -q plasma6-plasma 2>/dev/null | head -n 10 || true
               exit "$install_rc"
             fi
 

@@ -220,8 +220,38 @@ fi
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
 
 change_pkg_url_to_latest () {
-	sed -i 'orig' 's/quarterly/latest/' /etc/pkg/FreeBSD.conf
-	grep url /etc/pkg/FreeBSD.conf
+	# FreeBSD 14/15: repo configs live in /etc/pkg and/or /usr/local/etc/pkg/repos.
+	# 15.x quarterly may omit heavy metas like x11/kde; "latest" is required for those.
+	# Always force an enabled latest FreeBSD repo rather than only string-replacing quarterly.
+	_switched=0
+	for _pf in /etc/pkg/FreeBSD.conf /usr/local/etc/pkg/repos/FreeBSD.conf ; do
+		if [ -f "$_pf" ] ; then
+			if grep -q 'quarterly' "$_pf" 2>/dev/null ; then
+				# FreeBSD sed: -i extension (backup suffix)
+				sed -i '.bak' -e 's/quarterly/latest/g' "$_pf"
+				_switched=1
+				echo "pkg: rewrote quarterly→latest in $_pf" | tee -a "$LOGFILE"
+			fi
+			grep -H 'url' "$_pf" 2>/dev/null | tee -a "$LOGFILE" || true
+		fi
+	done
+	# Ensure a local override wins (pkg merges /usr/local/etc/pkg/repos/*.conf)
+	mkdir -p /usr/local/etc/pkg/repos
+	cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<'PKGEOF'
+# installx.sh — force package set "latest" for workstation desktop packages
+FreeBSD: {
+  url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest",
+  mirror_type: "srv",
+  signature_type: "fingerprints",
+  fingerprints: "/usr/share/keys/pkg",
+  enabled: yes
+}
+PKGEOF
+	echo "pkg: wrote /usr/local/etc/pkg/repos/FreeBSD.conf (latest)" | tee -a "$LOGFILE"
+	# Show effective config after override
+	if command -v pkg >/dev/null 2>&1 ; then
+		pkg -vv 2>/dev/null | grep -A2 'url' | head -n 20 | tee -a "$LOGFILE" || true
+	fi
 }
 
 load_card_readers () {
@@ -621,10 +651,25 @@ pkgs_filter_available() {
 	echo "$_kept" | sed 's/^ *//'
 }
 
+# Resolve KDE/Plasma package set for this ABI/catalog (15.x quarterly may lack x11/kde)
+kde_desktop_pkgs() {
+	if pkg_is_available kde ; then
+		echo "kde"
+	elif pkg_is_available plasma6-plasma ; then
+		# Minimal Plasma 6 (handbook); still a full DE session with startplasma-x11
+		echo "plasma6-plasma konsole"
+	elif pkg_is_available plasma5-plasma ; then
+		echo "plasma5-plasma"
+	else
+		# Prefer meta name for error messages
+		echo "kde"
+	fi
+}
+
 # Required packages to offer a desktop (includes login manager / wayland plumbing)
 desktop_required_pkgs() {
 	case $(echo "$1" | tr '[:upper:]' '[:lower:]') in
-		kde) echo "kde sddm dbus xorg" ;;
+		kde) echo "$(kde_desktop_pkgs) sddm dbus xorg" ;;
 		gnome) echo "gnome gdm dbus" ;;
 		xfce4|xfce) echo "xfce sddm dbus xorg" ;;
 		mate) echo "mate sddm dbus xorg" ;;
@@ -766,9 +811,11 @@ desktop_key=$(echo "$desktop" | tr '[:upper:]' '[:lower:]')
 
 case $desktop_key in
   kde)
-      # FreeBSD handbook: pkg install kde (Plasma 6 meta); X11 session is startplasma-x11
+      # Handbook: pkg install kde; X11 session startplasma-x11.
+      # On some 15.x quarterly catalogs kde is absent — fall back to plasma6-plasma.
       XINIT_CMD="startplasma-x11"
-      DESKTOP_PKGS="kde"
+      DESKTOP_PKGS=$(kde_desktop_pkgs)
+      echo "kde: using packages: $DESKTOP_PKGS" | tee -a "$LOGFILE"
       DISPLAY_MGR="sddm"
       ;;
   windowmaker)

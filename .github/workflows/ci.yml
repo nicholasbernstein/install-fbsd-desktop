@@ -200,8 +200,9 @@ jobs:
     with:
       desktop: KDE
       minimal_xorg: false
-      mem: "12288"
-      timeout_minutes: 180
+      # Full Plasma is heavy; give the VM more RAM on 15.x package sets
+      mem: "16384"
+      timeout_minutes: 240
 
   smoke-gnome:
     name: Desktop / GNOME
@@ -235,24 +236,45 @@ jobs:
             export ASSUME_ALWAYS_YES=yes
             export IGNORE_OSVERSION=yes
             pkg update -f
-            pkg install -y pkg
           run: |
             set -e
             set -x
             cd "$GITHUB_WORKSPACE" 2>/dev/null || cd "$(pwd)"
+            pwd
+            ls -la
+            ls -la scripts/
+            freebsd-version
+            pkg -v
             export INSTALLX_PKG_VERSION=0.2.0
             export INSTALLX_PKG_REVISION="$(echo "${GITHUB_SHA:-unknown}" | cut -c1-7)"
-            sh scripts/build-freebsd-pkg.sh "$GITHUB_WORKSPACE/dist"
-            ls -la dist
+            mkdir -p dist
+            set +e
+            sh -x scripts/build-freebsd-pkg.sh "$(pwd)/dist"
+            brc=$?
+            set -e
+            echo "==== dist/ ===="
+            ls -la dist/ || true
+            if [ -f dist/pkg-create.err ]; then
+              echo "==== pkg-create.err ===="
+              cat dist/pkg-create.err
+            fi
+            if [ "$brc" -ne 0 ]; then
+              echo "build-freebsd-pkg.sh failed with $brc" >&2
+              exit "$brc"
+            fi
+            test -f dist/CONTENT_SHA256
+            test -f dist/SHA256SUMS
             cat dist/CONTENT_SHA256
             cat dist/SHA256SUMS
+            ls -la dist/*.pkg
 
       - name: Upload build artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: freebsd-package-dist
           path: dist/
-          if-no-files-found: error
+          if-no-files-found: warn
 
   # -------------------------------------------------------------------------
   # Release only after ALL smokes + package succeed, and only if content changed
