@@ -203,10 +203,8 @@ else
 		echo "  Or: INSTALLX_NONINTERACTIVE=1 INSTALLX_DESKTOP=... $0" >&2
 		exit 1
 	fi
-	echo "installx: interactive mode using ${DIALOG_BIN} (TERM=${TERM:-?}). Log: $LOGFILE"
-	echo "installx: Ctrl+C aborts the script. Esc cancels a dialog. Quit exits from the desktop menu."
-	echo "installx: interactive mode using ${DIALOG_BIN}" >> "$LOGFILE"
-	dialog --title "installx" --msgbox "Welcome to install-fbsd-desktop.\n\nUI: ${DIALOG_BIN}\n\nKeys:\n  Enter  — OK / continue\n  Esc    — cancel this dialog\n  Ctrl+C — abort the whole script\n\nNext: package catalog update (may take a minute), then pick a desktop or Quit." 15 62
+	echo "installx: interactive mode (log: $LOGFILE)" | tee -a "$LOGFILE"
+	dialog --title "installx" --msgbox "Welcome to install-fbsd-desktop.\n\nThis program will guide you through sensible choices when installing a FreeBSD desktop.\n\nYou can cancel a screen with Esc, quit from the desktop menu, or press Ctrl+C to abort at any time." 12 60
 	_drc=$?
 	# wait returns 128+N if child died from signal N; treat as abort
 	if [ "$_drc" -ge 128 ] ; then
@@ -218,7 +216,7 @@ else
 		exit 0
 	fi
 	if [ "$_drc" -ne 0 ] ; then
-		echo "error: dialog/bsddialog failed (exit ${_drc}). TERM=${TERM:-unset}" >&2
+		echo "error: dialog UI failed (exit ${_drc}). TERM=${TERM:-unset}" >&2
 		exit 1
 	fi
 fi
@@ -353,10 +351,9 @@ report(){
 # this is mainly just to make sure pkg has been bootstrapped
 export ASSUME_ALWAYS_YES=yes
 if ! is_noninteractive ; then
-	echo "installx: updating package catalog (pkg update) — please wait (Ctrl+C aborts)…" | tee -a "$LOGFILE"
+	echo "installx: updating package catalog…" | tee -a "$LOGFILE"
 fi
-# Interruptible: background+wait so our INT trap runs (pkg alone can feel unresponsive)
-installx_run_interruptible sh -c "pkg update 2>&1 | tee -a \"${LOGFILE}\""
+installx_pkg_update_with_progress "Package catalog" "Updating package catalog (pkg update)…\n\nPlease wait.\nCtrl+C aborts."
 report "pkg bootstrapping" "$INSTALLX_RUN_RC"
 if ! is_noninteractive ; then
 	echo "installx: package catalog ready; continuing…" | tee -a "$LOGFILE"
@@ -552,7 +549,7 @@ if [ "$rolling" -eq 0  ] ; then
 	if ! is_noninteractive ; then
 		echo "installx: refreshing package catalog after switching to latest…" | tee -a "$LOGFILE"
 	fi
-	installx_run_interruptible sh -c "pkg update 2>&1 | tee -a \"${LOGFILE}\""
+	installx_pkg_update_with_progress "Package catalog (latest)" "Refreshing catalog after switching to latest packages…\n\nPlease wait.\nCtrl+C aborts."
 fi
 
 # ---------------------------------------------------------------------------
