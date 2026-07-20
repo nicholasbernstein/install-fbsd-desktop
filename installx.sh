@@ -111,12 +111,46 @@ installx_run_interruptible() {
 	return "${INSTALLX_RUN_RC}"
 }
 
-# pkg update with an interactive gauge (dialog/bsddialog --gauge).
-# Opens the gauge at 0% immediately, then pulses until pkg finishes.
-# Sets INSTALLX_RUN_RC. Logs full pkg output to LOGFILE.
+# Generic progress gauge while a background PID runs (pulsing bar).
+# $1=title $2=body text $3=pid to watch
+installx_gauge_while_pid() {
+	_gtitle="$1"
+	_gtext="$2"
+	_gpid="$3"
+	if [ -z "${DIALOG_BIN:-}" ] || [ -z "${_gpid}" ] ; then
+		wait "${_gpid}" 2>/dev/null || true
+		return 0
+	fi
+	if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ] || [ "$TERM" = "unknown" ] ; then
+		TERM=xterm
+		export TERM
+	fi
+	# Pipe feeder → gauge in foreground so the bar paints immediately (no FIFO deadlock).
+	# Keep INSTALLX_CHILD_PID as the real work PID for Ctrl+C; gauge is separate.
+	(
+		# Immediate first frame — no sleep before first paint
+		printf '%s\n' "XXX" "${_gtext}" "XXX" "1"
+		_pct=4
+		while kill -0 "${_gpid}" 2>/dev/null ; do
+			printf '%s\n' "XXX" "${_gtext}" "XXX" "${_pct}"
+			_pct=$((_pct + 3))
+			if [ "${_pct}" -ge 95 ] ; then
+				_pct=5
+			fi
+			# Short sleep so the bar stays lively without starving the CPU
+			sleep 0.3 2>/dev/null || sleep 1
+		done
+		printf '%s\n' "XXX" "Finishing…" "XXX" "100"
+	) | "$DIALOG_BIN" --title "installx" --gauge "${_gtitle}" 12 60 0
+}
+
+# pkg update with an interactive gauge. Sets INSTALLX_RUN_RC.
 installx_pkg_update_with_progress() {
 	_gauge_title="${1:-Updating package catalog}"
 	_gauge_text="${2:-Updating the package catalog…\n\nPlease wait.\nCtrl+C aborts.}"
+
+	# Console line always — even if the gauge fails, the user sees activity
+	echo "installx: ${_gauge_title}…" | tee -a "$LOGFILE"
 
 	if is_noninteractive || [ -z "${DIALOG_BIN:-}" ] ; then
 		installx_run_interruptible sh -c "pkg update 2>&1 | tee -a \"${LOGFILE}\""
@@ -125,67 +159,14 @@ installx_pkg_update_with_progress() {
 
 	_pkg_out=$(mktemp /tmp/installx-pkgup.XXXXXX) || _pkg_out="/tmp/installx-pkgup.$$"
 	_pkg_rcfile="${_pkg_out}.rc"
-	_fifo=$(mktemp -u /tmp/installx-gauge.XXXXXX) || _fifo="/tmp/installx-gauge.$$"
-	mkfifo "${_fifo}" || {
-		# Fallback without fifo: still try piped gauge
-		_fifo=""
-	}
 
-	if [ -n "${_fifo}" ] ; then
-		# Start gauge first so the user sees progress the instant welcome closes
-		if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ] || [ "$TERM" = "unknown" ] ; then
-			TERM=xterm
-			export TERM
-		fi
-		"$DIALOG_BIN" --title "installx" --gauge "${_gauge_title}" 12 60 0 <"${_fifo}" &
-		INSTALLX_GAUGE_PID=$!
-		# Open writer end (must stay open for gauge lifetime)
-		exec 3>"${_fifo}"
-		rm -f "${_fifo}"
-		# Paint 0% immediately
-		printf '%s\n' "XXX" "${_gauge_text}" "XXX" "0" >&3
+	( pkg update >"${_pkg_out}" 2>&1; echo $? >"${_pkg_rcfile}" ) &
+	INSTALLX_CHILD_PID=$!
 
-		# Start pkg after the bar is visible
-		( pkg update >"${_pkg_out}" 2>&1; echo $? >"${_pkg_rcfile}" ) &
-		INSTALLX_CHILD_PID=$!
+	installx_gauge_while_pid "${_gauge_title}" "${_gauge_text}" "${INSTALLX_CHILD_PID}"
 
-		_pct=3
-		while kill -0 "${INSTALLX_CHILD_PID}" 2>/dev/null ; do
-			printf '%s\n' "XXX" "${_gauge_text}" "XXX" "${_pct}" >&3
-			_pct=$((_pct + 2))
-			if [ "${_pct}" -ge 95 ] ; then
-				_pct=5
-			fi
-			sleep 1
-		done
-		printf '%s\n' "XXX" "Finishing…" "XXX" "100" >&3
-		exec 3>&-
-
-		wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
-		INSTALLX_CHILD_PID=""
-		installx_kill_pid "${INSTALLX_GAUGE_PID:-}"
-		INSTALLX_GAUGE_PID=""
-	else
-		# No fifo: old pipe approach
-		( pkg update >"${_pkg_out}" 2>&1; echo $? >"${_pkg_rcfile}" ) &
-		INSTALLX_CHILD_PID=$!
-		(
-			printf '%s\n' "XXX" "${_gauge_text}" "XXX" "0"
-			_pct=3
-			while kill -0 "${INSTALLX_CHILD_PID}" 2>/dev/null ; do
-				printf '%s\n' "XXX" "${_gauge_text}" "XXX" "${_pct}"
-				_pct=$((_pct + 2))
-				[ "${_pct}" -ge 95 ] && _pct=5
-				sleep 1
-			done
-			printf '%s\n' "XXX" "Finishing…" "XXX" "100"
-		) | "$DIALOG_BIN" --title "installx" --gauge "${_gauge_title}" 12 60 0 &
-		INSTALLX_GAUGE_PID=$!
-		wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
-		INSTALLX_CHILD_PID=""
-		installx_kill_pid "${INSTALLX_GAUGE_PID:-}"
-		INSTALLX_GAUGE_PID=""
-	fi
+	wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
+	INSTALLX_CHILD_PID=""
 
 	if [ -f "${_pkg_rcfile}" ] ; then
 		INSTALLX_RUN_RC=$(cat "${_pkg_rcfile}")
@@ -231,22 +212,9 @@ else
 		echo "  Or: INSTALLX_NONINTERACTIVE=1 INSTALLX_DESKTOP=... $0" >&2
 		exit 1
 	fi
+	# Welcome is shown later, immediately before the first progress gauge,
+	# so OK is never followed by a silent pause.
 	echo "installx: interactive mode (log: $LOGFILE)" | tee -a "$LOGFILE"
-	dialog --title "installx" --msgbox "Welcome to install-fbsd-desktop.\n\nThis program will guide you through sensible choices when installing a FreeBSD desktop.\n\nYou can cancel a screen with Esc, quit from the desktop menu, or press Ctrl+C to abort at any time." 12 60
-	_drc=$?
-	# wait returns 128+N if child died from signal N; treat as abort
-	if [ "$_drc" -ge 128 ] ; then
-		installx_abort INT
-	fi
-	# 0 = OK; 1 / 255 = cancel/Esc — clean quit
-	if [ "$_drc" -eq 1 ] || [ "$_drc" -eq 255 ] ; then
-		echo "installx: cancelled at welcome screen." | tee -a "$LOGFILE"
-		exit 0
-	fi
-	if [ "$_drc" -ne 0 ] ; then
-		echo "error: dialog UI failed (exit ${_drc}). TERM=${TERM:-unset}" >&2
-		exit 1
-	fi
 fi
 
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
@@ -379,9 +347,23 @@ report(){
 # this is mainly just to make sure pkg has been bootstrapped
 export ASSUME_ALWAYS_YES=yes
 if ! is_noninteractive ; then
-	echo "installx: updating package catalog…" | tee -a "$LOGFILE"
+	# Welcome → progress with no gap (user should never wonder if we hung)
+	dialog --title "installx" --msgbox "Welcome to install-fbsd-desktop.\n\nThis program will guide you through sensible choices when installing a FreeBSD desktop.\n\nYou can cancel a screen with Esc, quit from the desktop menu, or press Ctrl+C to abort at any time." 12 60
+	_drc=$?
+	if [ "$_drc" -ge 128 ] ; then
+		installx_abort INT
+	fi
+	if [ "$_drc" -eq 1 ] || [ "$_drc" -eq 255 ] ; then
+		echo "installx: cancelled at welcome screen." | tee -a "$LOGFILE"
+		exit 0
+	fi
+	if [ "$_drc" -ne 0 ] ; then
+		echo "error: dialog UI failed (exit ${_drc}). TERM=${TERM:-unset}" >&2
+		exit 1
+	fi
 fi
-installx_pkg_update_with_progress "Package catalog" "Updating package catalog (pkg update)…\n\nPlease wait.\nCtrl+C aborts."
+# Progress UI starts in the same breath as OK (no silent work before the gauge)
+installx_pkg_update_with_progress "Package catalog" "Updating the package catalog…\n\nPlease wait.\nCtrl+C aborts."
 report "pkg bootstrapping" "$INSTALLX_RUN_RC"
 if ! is_noninteractive ; then
 	echo "installx: package catalog ready; continuing…" | tee -a "$LOGFILE"
@@ -574,10 +556,7 @@ if [ "$rolling" -eq 0  ] ; then
 	change_pkg_url_to_latest
 	report "quarterly->latest changed" "$?"
 	# Catalog must match the repo we will install from
-	if ! is_noninteractive ; then
-		echo "installx: refreshing package catalog after switching to latest…" | tee -a "$LOGFILE"
-	fi
-	installx_pkg_update_with_progress "Package catalog (latest)" "Refreshing catalog after switching to latest packages…\n\nPlease wait.\nCtrl+C aborts."
+	installx_pkg_update_with_progress "Package catalog (latest)" "Refreshing the package catalog…\n\nPlease wait.\nCtrl+C aborts."
 fi
 
 # ---------------------------------------------------------------------------
@@ -685,18 +664,45 @@ UNAVAILABLE_DESKTOPS=""
 UNAVAILABLE_DESKTOP_DETAIL=""
 
 echo "pkg: validating desktop options against package catalog…" | tee -a "$LOGFILE"
-for _tag in $ALL_DESKTOP_TAGS ; do
-	_req=$(desktop_required_pkgs "$_tag")
-	if pkgs_find_missing $_req ; then
-		AVAILABLE_DESKTOPS="${AVAILABLE_DESKTOPS} ${_tag}"
-	else
-		UNAVAILABLE_DESKTOPS="${UNAVAILABLE_DESKTOPS} ${_tag}"
-		UNAVAILABLE_DESKTOP_DETAIL="${UNAVAILABLE_DESKTOP_DETAIL}\n  ${_tag}: missing ${MISSING_PKGS}"
-		echo "pkg: desktop '${_tag}' unavailable (missing:${MISSING_PKGS})" | tee -a "$LOGFILE"
-	fi
-done
-AVAILABLE_DESKTOPS=$(echo "$AVAILABLE_DESKTOPS" | sed 's/^ *//')
-UNAVAILABLE_DESKTOPS=$(echo "$UNAVAILABLE_DESKTOPS" | sed 's/^ *//')
+
+# Catalog checks can take a long time — never leave the UI silent
+_val_dir=$(mktemp -d /tmp/installx-val.XXXXXX) || _val_dir="/tmp/installx-val.$$"
+mkdir -p "${_val_dir}"
+(
+	_av=""
+	_un=""
+	_detail=""
+	for _tag in $ALL_DESKTOP_TAGS ; do
+		_req=$(desktop_required_pkgs "$_tag")
+		if pkgs_find_missing $_req ; then
+			_av="${_av} ${_tag}"
+			echo "pkg: desktop '${_tag}' OK" >> "$LOGFILE"
+		else
+			_un="${_un} ${_tag}"
+			_detail="${_detail}\n  ${_tag}: missing ${MISSING_PKGS}"
+			echo "pkg: desktop '${_tag}' unavailable (missing:${MISSING_PKGS})" >> "$LOGFILE"
+		fi
+	done
+	echo "$_av" | sed 's/^ *//' > "${_val_dir}/available"
+	echo "$_un" | sed 's/^ *//' > "${_val_dir}/unavailable"
+	# detail may contain newlines — store as-is
+	printf '%s' "$_detail" > "${_val_dir}/detail"
+) &
+INSTALLX_CHILD_PID=$!
+if ! is_noninteractive && [ -n "${DIALOG_BIN:-}" ] ; then
+	installx_gauge_while_pid "Checking desktops" \
+		"Checking which desktops can be installed…\n\nQuerying the package catalog.\nCtrl+C aborts." \
+		"${INSTALLX_CHILD_PID}"
+else
+	wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
+fi
+wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
+INSTALLX_CHILD_PID=""
+
+AVAILABLE_DESKTOPS=$(cat "${_val_dir}/available" 2>/dev/null || true)
+UNAVAILABLE_DESKTOPS=$(cat "${_val_dir}/unavailable" 2>/dev/null || true)
+UNAVAILABLE_DESKTOP_DETAIL=$(cat "${_val_dir}/detail" 2>/dev/null || true)
+rm -rf "${_val_dir}"
 
 if [ -n "$UNAVAILABLE_DESKTOPS" ] ; then
 	echo "pkg: desktops removed from selection: $UNAVAILABLE_DESKTOPS" | tee -a "$LOGFILE"
