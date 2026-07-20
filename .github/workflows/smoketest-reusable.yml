@@ -129,7 +129,9 @@ jobs:
             export INSTALLX_NONINTERACTIVE=1
             export INSTALLX_USER="$TESTUSER"
             export INSTALLX_DESKTOP="${{ inputs.desktop }}"
-            export INSTALLX_ROLLING=no
+            # Leave INSTALLX_ROLLING unset so installx can prefer latest only on
+            # newest/preview FreeBSD; older releases stay on quarterly.
+            unset INSTALLX_ROLLING || true
             export INSTALLX_EXTRA_PKGS="bash sudo"
             export INSTALLX_GRAPHICS=no
             # Probe sound stack in CI; skip fat audio packages to keep smoke runtime down

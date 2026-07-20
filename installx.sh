@@ -15,7 +15,9 @@ date > "$LOGFILE"
 #   INSTALLX_DESKTOP       desktop/compositor name (default: awesome)
 #                          X11: KDE LXDE LXQT GNOME Xfce4 WindowMaker awesome MATE Cinnamon
 #                          Wayland: Sway Hyprland  (same menu; stack is chosen automatically)
-#   INSTALLX_ROLLING       yes|no — use pkg "latest" instead of quarterly (default: no)
+#   INSTALLX_ROLLING       yes|no — use pkg "latest" instead of quarterly
+#                          (default: no, except newest/preview FreeBSD where quarterly
+#                          desktop packages are often incomplete — then default yes)
 #   INSTALLX_EXTRA_PKGS    space-separated packages (default: bash sudo)
 #   INSTALLX_OPT           space-separated option names matching the dialog checklist (see below)
 #   INSTALLX_GRAPHICS      yes|no|auto — install GPU drivers (default: no).
@@ -561,34 +563,8 @@ apply_display_manager() {
 	esac
 }
 
-if is_noninteractive ; then
-	# Default: stay on quarterly. Opt in with INSTALLX_ROLLING=yes.
-	case "${INSTALLX_ROLLING:-no}" in
-		[Yy][Ee][Ss]|1|true|TRUE) rolling=0 ;;
-		*) rolling=1 ;;
-	esac
-	echo "noninteractive: use_latest_packages=$( [ "$rolling" -eq 0 ] && echo yes || echo no )" | tee -a "$LOGFILE"
-else
-	# --defaultno: quarterly is the recommended/default choice
-	dialog --defaultno --title "Package branch" --yesno "Stay on quarterly packages (recommended), or switch to 'latest'?\n\n• No  = quarterly (default, more conservative)\n• Yes = latest (newer ports; some desktops may only appear here)\n\nMost users should choose No." 12 60
-	rolling=$?
-fi
-
-if [ "$rolling" -eq 0  ] ; then 
-	change_pkg_url_to_latest
-	report "quarterly->latest changed" "$?"
-	installx_pkg_update_with_progress "Package catalog (latest)" "Refreshing the package catalog…\n\nPlease wait.\nCtrl+C aborts."
-else
-	echo "pkg: staying on quarterly package set" | tee -a "$LOGFILE"
-fi
-
 # ---------------------------------------------------------------------------
-# Package catalog validation
-#
-# Before offering choices (or installing), verify names exist in the pkg
-# cache/catalog. Unavailable desktops are removed from the menu; optional
-# packages are dropped with a warning. CI/noninteractive fails hard if the
-# selected desktop's required packages are missing.
+# Package catalog helpers (needed before package-branch decision)
 # ---------------------------------------------------------------------------
 pkg_is_available() {
 	_pn="$1"
@@ -608,6 +584,105 @@ pkg_is_available() {
 	fi
 	return 1
 }
+
+# True when this FreeBSD is a preview/dev branch, or the newest supported
+# minor (quarterly desktop packages often lag there). Default to pkg "latest"
+# only in those cases; stable older releases stay on quarterly.
+default_prefer_latest_packages() {
+	_ver=$(freebsd-version 2>/dev/null || uname -r)
+	_mm=$(echo "$_ver" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')
+
+	# Development / prerelease branches almost always need latest ports
+	case "$_ver" in
+		*CURRENT*|*STABLE*|*BETA*|*RC*|*PRERELEASE*|*ALPHA*)
+			echo "pkg: FreeBSD $_ver looks like a development/preview branch — prefer latest" | tee -a "$LOGFILE"
+			return 0
+			;;
+	esac
+
+	# Newest entry from supported-release fallback (kept next to the script/repo)
+	_fb=""
+	for _cand in \
+		"$(dirname "$0")/scripts/data/freebsd-releases-fallback.json" \
+		"./scripts/data/freebsd-releases-fallback.json" \
+		"/usr/local/share/install-fbsd-desktop/freebsd-releases-fallback.json"
+	do
+		if [ -f "$_cand" ] ; then
+			_fb="$_cand"
+			break
+		fi
+	done
+	if [ -n "$_fb" ] ; then
+		_newest=$(sed -n 's/.*"\([0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' "$_fb" | head -n 1)
+		if [ -n "$_newest" ] && [ "$_mm" = "$_newest" ] ; then
+			echo "pkg: FreeBSD $_mm is the newest supported release in $_fb — prefer latest (quarterly often incomplete)" | tee -a "$LOGFILE"
+			return 0
+		fi
+	fi
+
+	# Fallback heuristic: base desktop stack present but no major DE metas yet
+	if pkg_is_available xorg || pkg_is_available xorg-minimal ; then
+		if ! pkg_is_available kde \
+			&& ! pkg_is_available plasma6-plasma \
+			&& ! pkg_is_available gnome \
+			&& ! pkg_is_available xfce ; then
+			echo "pkg: quarterly desktop catalog looks sparse on $_ver — prefer latest" | tee -a "$LOGFILE"
+			return 0
+		fi
+	fi
+	return 1
+}
+
+# ---------------------------------------------------------------------------
+# Package branch: quarterly by default; latest only when user opts in, or when
+# this FreeBSD is new/preview and quarterly desktops are incomplete.
+# ---------------------------------------------------------------------------
+_prefer_latest=0
+if default_prefer_latest_packages ; then
+	_prefer_latest=1
+fi
+
+if is_noninteractive ; then
+	# Explicit env wins; else exception→latest, otherwise quarterly
+	if [ -n "${INSTALLX_ROLLING:-}" ] ; then
+		case "${INSTALLX_ROLLING}" in
+			[Yy][Ee][Ss]|1|true|TRUE) rolling=0 ;;
+			*) rolling=1 ;;
+		esac
+	elif [ "$_prefer_latest" -eq 1 ] ; then
+		rolling=0
+	else
+		rolling=1
+	fi
+	echo "noninteractive: use_latest_packages=$( [ "$rolling" -eq 0 ] && echo yes || echo no ) prefer_latest_default=${_prefer_latest}" | tee -a "$LOGFILE"
+else
+	if [ "$_prefer_latest" -eq 1 ] ; then
+		# Newest/preview: default Yes (latest), user can still pick No
+		dialog --title "Package branch" --yesno "This FreeBSD release looks new or still filling out quarterly packages.\n\nUse the 'latest' package branch? (recommended here)\n\n• Yes = latest (more complete desktop packages on new releases)\n• No  = quarterly (more conservative)\n\nYou can stay on quarterly if you prefer." 14 62
+		rolling=$?
+	else
+		# Stable releases: default No (quarterly)
+		dialog --defaultno --title "Package branch" --yesno "Use quarterly packages (recommended), or switch to 'latest'?\n\n• No  = quarterly (default)\n• Yes = latest (newer ports)\n\nMost users on stable releases should choose No." 12 60
+		rolling=$?
+	fi
+fi
+
+if [ "$rolling" -eq 0  ] ; then 
+	change_pkg_url_to_latest
+	report "quarterly->latest changed" "$?"
+	installx_pkg_update_with_progress "Package catalog (latest)" "Refreshing the package catalog…\n\nPlease wait.\nCtrl+C aborts."
+else
+	echo "pkg: staying on quarterly package set" | tee -a "$LOGFILE"
+fi
+
+# ---------------------------------------------------------------------------
+# Package catalog validation
+#
+# Before offering choices (or installing), verify names exist in the pkg
+# cache/catalog. Unavailable desktops are removed from the menu; optional
+# packages are dropped with a warning. CI/noninteractive fails hard if the
+# selected desktop's required packages are missing.
+# ---------------------------------------------------------------------------
 
 # Sets MISSING_PKGS to those not in the catalog; returns 0 if all present
 pkgs_find_missing() {
