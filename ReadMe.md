@@ -14,6 +14,18 @@ fetch https://raw.githubusercontent.com/nicholasbernstein/install-fbsd-desktop/m
 ```
 ...or not. You're a grownup. Make your own decisions about how you want to do things.
 
+## What gets installed
+
+One menu lists desktops and compositors together. You pick what you want;
+`installx.sh` applies a reasonable stack automatically:
+
+| Choice | Session | Notes |
+|--------|---------|--------|
+| KDE, GNOME, Xfce4, MATE, Cinnamon, LXQt, LXDE, WindowMaker, awesome | X11 | xorg + sddm (gdm for GNOME) |
+| Sway, Hyprland | Wayland | wayland + seatd + xwayland; ly greeter; config under `~/.config/` |
+
+Wayland installs also write `~/start-desktop.sh` and enable `seatd`.
+
 ## CI / non-interactive install
 
 Each desktop has its own GitHub Actions workflow under `.github/workflows/desktop-*.yml`.
@@ -27,11 +39,14 @@ They all call the shared runner in `smoketest-reusable.yml` (FreeBSD VM → noni
 | `desktop-lxde.yml` | LXDE | yes | yes | yes |
 | `desktop-lxqt.yml` | LXQT | yes | yes | yes |
 | `desktop-xfce4.yml` | Xfce4 | yes | yes | yes |
+| `desktop-sway.yml` | Sway (Wayland) | yes | yes | yes |
+| `desktop-hyprland.yml` | Hyprland (Wayland) | yes | yes | yes |
 | `desktop-mate.yml` | MATE | PR only | yes | yes |
+| `desktop-cinnamon.yml` | Cinnamon | PR only | yes | yes |
 | `desktop-kde.yml` | KDE | PR only | yes | yes |
 | `desktop-gnome.yml` | GNOME | PR only | yes | yes |
 
-Heavier DEs (MATE/KDE/GNOME) skip plain pushes so default CI stays lighter; re-run any
+Heavier DEs skip plain pushes so default CI stays lighter; re-run any
 workflow from the Actions tab (`workflow_dispatch`).
 
 Noninteractive env knobs (also used by CI):
@@ -39,7 +54,7 @@ Noninteractive env knobs (also used by CI):
 ```sh
 export INSTALLX_NONINTERACTIVE=1   # or CI=true
 export INSTALLX_USER=nick
-export INSTALLX_DESKTOP=awesome    # KDE LXDE LXQT GNOME Xfce4 WindowMaker awesome MATE
+export INSTALLX_DESKTOP=Sway       # any menu name, e.g. Cinnamon Hyprland awesome …
 export INSTALLX_ROLLING=yes
 export INSTALLX_EXTRA_PKGS="bash sudo"
 export INSTALLX_GRAPHICS=no

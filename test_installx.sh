@@ -1,5 +1,5 @@
 #!/bin/sh
-# file: installx.sh
+# file: test_installx.sh — post-install checks for installx.sh
 
 testuser="nick"
 tuhome="/home/${testuser}"
@@ -22,9 +22,22 @@ test_group_members() {
   assertContains ["checking video membership"]  "$( grep video /etc/group )" 'root' 
 }
 
-test_xinitrc() {
-  assertTrue "/etc/skel/.xinitrc exists" "[ -e /etc/skel/.xinitrc ]"
-  assertTrue "${tuhome}/.xinitrc exists" "[ -e ${tuhome}/.xinitrc ]"
+test_session_files() {
+  # X11 desktops use .xinitrc; Wayland compositors seed config + start helper
+  if [ -d "${tuhome}/.config/sway" ] || [ -d "${tuhome}/.config/hypr" ] ; then
+    assertTrue "wayland start helper exists" "[ -x ${tuhome}/start-desktop.sh ]"
+    if [ -d "${tuhome}/.config/sway" ] ; then
+      assertTrue "sway config exists" "[ -e ${tuhome}/.config/sway/config ]"
+    fi
+    if [ -d "${tuhome}/.config/hypr" ] ; then
+      assertTrue "hyprland config exists" "[ -e ${tuhome}/.config/hypr/hyprland.conf ]"
+    fi
+    # seatd should be enabled for Wayland profiles
+    assertContains ["seatd enabled"] "$( grep seatd_enable /etc/rc.conf )" 'YES'
+  else
+    assertTrue "/etc/skel/.xinitrc exists" "[ -e /etc/skel/.xinitrc ]"
+    assertTrue "${tuhome}/.xinitrc exists" "[ -e ${tuhome}/.xinitrc ]"
+  fi
 }
 
 test_pkg_url_to_latest() { 
