@@ -68,6 +68,16 @@ resolve_dialog_bin() {
 # Child PIDs we may need to kill on Ctrl+C (ncurses dialog swallows SIGINT if
 # it is the foreground process — so we run it in the background and wait).
 INSTALLX_CHILD_PID=""
+INSTALLX_GAUGE_PID=""
+
+installx_kill_pid() {
+	_kp="$1"
+	[ -z "$_kp" ] && return 0
+	kill -TERM "$_kp" 2>/dev/null || true
+	sleep 0.1 2>/dev/null || true
+	kill -KILL "$_kp" 2>/dev/null || true
+	wait "$_kp" 2>/dev/null || true
+}
 
 # Clean abort on Ctrl+C (SIGINT) / SIGTERM.
 installx_abort() {
@@ -76,12 +86,10 @@ installx_abort() {
 	echo "installx: Ctrl+C / signal ${_sig} — exiting." >> "$LOGFILE" 2>/dev/null || true
 	echo ""
 	echo "installx: Ctrl+C — exiting."
-	if [ -n "${INSTALLX_CHILD_PID:-}" ] ; then
-		kill -TERM "${INSTALLX_CHILD_PID}" 2>/dev/null || true
-		kill -KILL "${INSTALLX_CHILD_PID}" 2>/dev/null || true
-		wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
-		INSTALLX_CHILD_PID=""
-	fi
+	installx_kill_pid "${INSTALLX_GAUGE_PID:-}"
+	INSTALLX_GAUGE_PID=""
+	installx_kill_pid "${INSTALLX_CHILD_PID:-}"
+	INSTALLX_CHILD_PID=""
 	# Stop any remaining children of this shell (pkg, etc.)
 	kill -TERM -$$ 2>/dev/null || true
 	trap - INT TERM HUP
@@ -100,6 +108,66 @@ installx_run_interruptible() {
 	wait "${INSTALLX_CHILD_PID}"
 	INSTALLX_RUN_RC=$?
 	INSTALLX_CHILD_PID=""
+	return "${INSTALLX_RUN_RC}"
+}
+
+# pkg update with an interactive gauge (dialog/bsddialog --gauge).
+# pkg does not emit a stable percent, so the bar pulses until the job finishes.
+# Sets INSTALLX_RUN_RC. Logs full pkg output to LOGFILE.
+installx_pkg_update_with_progress() {
+	_gauge_title="${1:-Updating package catalog}"
+	_gauge_text="${2:-Fetching package repository metadata…\n\nThis may take a minute.\nCtrl+C aborts.}"
+
+	if is_noninteractive || [ -z "${DIALOG_BIN:-}" ] ; then
+		installx_run_interruptible sh -c "pkg update 2>&1 | tee -a \"${LOGFILE}\""
+		return "${INSTALLX_RUN_RC}"
+	fi
+
+	_pkg_out=$(mktemp /tmp/installx-pkgup.XXXXXX) || _pkg_out="/tmp/installx-pkgup.$$"
+	_pkg_rcfile="${_pkg_out}.rc"
+
+	# Start pkg update in the background; capture all output for the log
+	( pkg update >"${_pkg_out}" 2>&1; echo $? >"${_pkg_rcfile}" ) &
+	INSTALLX_CHILD_PID=$!
+
+	# Feed a pulsing percentage into --gauge until pkg exits
+	(
+		_pct=1
+		while kill -0 "${INSTALLX_CHILD_PID}" 2>/dev/null ; do
+			# dialog gauge protocol: optional XXX message block, then percent
+			echo "XXX"
+			echo "${_gauge_text}"
+			echo "XXX"
+			echo "${_pct}"
+			_pct=$((_pct + 2))
+			if [ "${_pct}" -ge 95 ] ; then
+				_pct=5
+			fi
+			sleep 1
+		done
+		echo "XXX"
+		echo "Finishing…"
+		echo "XXX"
+		echo 100
+	) | "$DIALOG_BIN" --title "installx" --gauge "${_gauge_title}" 12 60 0 &
+	INSTALLX_GAUGE_PID=$!
+
+	wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
+	INSTALLX_CHILD_PID=""
+
+	# Close the gauge
+	installx_kill_pid "${INSTALLX_GAUGE_PID:-}"
+	INSTALLX_GAUGE_PID=""
+
+	if [ -f "${_pkg_rcfile}" ] ; then
+		INSTALLX_RUN_RC=$(cat "${_pkg_rcfile}")
+	else
+		INSTALLX_RUN_RC=1
+	fi
+	if [ -f "${_pkg_out}" ] ; then
+		cat "${_pkg_out}" >> "$LOGFILE"
+		rm -f "${_pkg_out}" "${_pkg_rcfile}"
+	fi
 	return "${INSTALLX_RUN_RC}"
 }
 
