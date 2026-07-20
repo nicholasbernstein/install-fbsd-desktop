@@ -17,8 +17,8 @@ fetch https://raw.githubusercontent.com/nicholasbernstein/install-fbsd-desktop/m
 ## FreeBSD port / package
 
 A ports skeleton lives under `ports/sysutils/install-fbsd-desktop/`.
-CI builds a `.pkg` and publishes GitHub Release assets when content changes
-(see `.github/workflows/package-release.yml`).
+Full CI builds a `.pkg` and, after all smoketests pass, publishes GitHub
+Release assets when installable content changes (rolling tag `latest`).
 
 On FreeBSD, from this checkout:
 
@@ -45,36 +45,21 @@ One menu lists desktops and compositors together. You pick what you want;
 
 Wayland installs also write `~/start-desktop.sh` and enable `seatd`.
 
-## CI / non-interactive install
+## CI
 
-Each desktop has its own GitHub Actions workflow under `.github/workflows/desktop-*.yml`.
-They all call the shared runner in `smoketest-reusable.yml` (FreeBSD VM → noninteractive
-`installx.sh` → `test_installx.sh`).
+One workflow runs **everything** on every push, weekly schedule, PR, or manual
+dispatch (`.github/workflows/ci.yml`):
 
-**FreeBSD versions:** before each smoke matrix runs, `scripts/freebsd-supported-releases.py`
-builds the release list from [FreeBSD supported releases](https://www.freebsd.org/security/#sup)
-(intersected with [vmactions/freebsd-vm](https://github.com/vmactions/freebsd-vm) x86_64
-images). Offline fallback: `scripts/data/freebsd-releases-fallback.json` (refreshed weekly
-by `update-freebsd-releases.yml`). Pin a single version with the reusable workflow input
-`release: "14.4"`.
+1. **Lint** — shell/python syntax and FreeBSD release discovery script  
+2. **All desktop smokes** (in parallel) — each desktop × currently supported
+   FreeBSD releases ([security.freebsd.org](https://www.freebsd.org/security/#sup),
+   via `scripts/freebsd-supported-releases.py`)  
+3. **Package build** (in parallel with smokes) — `.pkg`, `installx.sh`, ports tarball  
+4. **Release** — only if **all** of the above succeeded **and** `CONTENT_SHA256`
+   differs from the current `latest` release (otherwise skip publish)
 
-| Workflow | Desktop | On push | Weekly | Manual |
-|----------|---------|---------|--------|--------|
-| `desktop-awesome.yml` | awesome | yes | yes | yes |
-| `desktop-windowmaker.yml` | WindowMaker | yes | yes | yes |
-| `desktop-lxde.yml` | LXDE | yes | yes | yes |
-| `desktop-lxqt.yml` | LXQT | yes | yes | yes |
-| `desktop-xfce4.yml` | Xfce4 | yes | yes | yes |
-| `desktop-sway.yml` | Sway (Wayland) | yes | yes | yes |
-| `desktop-hyprland.yml` | Hyprland (Wayland) | yes | yes | yes |
-| `desktop-mate.yml` | MATE | yes | yes | yes |
-| `desktop-cinnamon.yml` | Cinnamon | yes | yes | yes |
-| `desktop-kde.yml` | KDE | yes | yes | yes |
-| `desktop-gnome.yml` | GNOME | yes | yes | yes |
-| `package-release.yml` | build `.pkg` + GitHub Release | yes | — | yes |
-
-All desktop smoketests and the package/release job run on every push to `main`.
-Re-run any workflow from the Actions tab (`workflow_dispatch`).
+Desktops covered: awesome, WindowMaker, LXDE, LXQT, Xfce4, Sway, Hyprland,
+MATE, Cinnamon, KDE, GNOME.
 
 Noninteractive env knobs (also used by CI):
 

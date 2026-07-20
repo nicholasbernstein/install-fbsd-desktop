@@ -1,5 +1,5 @@
 # Reusable FreeBSD desktop install smoketest.
-# Called by per-desktop workflows (desktop-*.yml). Do not trigger directly.
+# Called from ci.yml for each desktop. Do not trigger directly.
 #
 # FreeBSD release matrix is resolved at runtime (job "resolve-releases") from
 # https://www.freebsd.org/security/#sup via scripts/freebsd-supported-releases.py,
