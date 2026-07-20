@@ -35,59 +35,51 @@ is_noninteractive() {
 	[ "${INSTALLX_NONINTERACTIVE:-0}" = "1" ] || [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ]
 }
 
-# UI helper: FreeBSD 14/15 ship bsddialog(1) in base; classic dialog(1) is the
-# ports package misc/dialog (may be absent). Prefer whatever is installed.
-# Both draw on stderr — do not redirect stderr in interactive mode.
+# UI helper: FreeBSD 13+ ships bsddialog(1) in base (preferred on console).
+# Classic dialog(1) is misc/dialog from ports and is optional.
+# Both draw on stderr — never redirect stderr in interactive mode.
 DIALOG_BIN=""
 resolve_dialog_bin() {
-	if command -v dialog >/dev/null 2>&1 ; then
-		DIALOG_BIN=$(command -v dialog)
-		return 0
-	fi
+	# Prefer base bsddialog on FreeBSD — more reliable on vt(4) / VirtualBox
 	if command -v bsddialog >/dev/null 2>&1 ; then
 		DIALOG_BIN=$(command -v bsddialog)
 		return 0
 	fi
-	# Last resort: try to install the ports dialog package (if pkg works)
+	if command -v dialog >/dev/null 2>&1 ; then
+		DIALOG_BIN=$(command -v dialog)
+		return 0
+	fi
 	if command -v pkg >/dev/null 2>&1 ; then
-		echo "installx: no dialog/bsddialog found; trying pkg install misc/dialog …" | tee -a "$LOGFILE"
+		echo "installx: no bsddialog/dialog found; trying pkg install misc/dialog …" | tee -a "$LOGFILE"
 		ASSUME_ALWAYS_YES=yes pkg install -y misc/dialog 2>/dev/null \
 			|| ASSUME_ALWAYS_YES=yes pkg install -y dialog 2>/dev/null || true
 	fi
-	if command -v dialog >/dev/null 2>&1 ; then
-		DIALOG_BIN=$(command -v dialog)
-		return 0
-	fi
 	if command -v bsddialog >/dev/null 2>&1 ; then
 		DIALOG_BIN=$(command -v bsddialog)
+		return 0
+	fi
+	if command -v dialog >/dev/null 2>&1 ; then
+		DIALOG_BIN=$(command -v dialog)
 		return 0
 	fi
 	return 1
 }
 
-# Wrapper so the rest of the script can keep calling dialog … (works for dialog or bsddialog)
+# Wrapper: rest of script keeps calling dialog …
 dialog() {
 	if [ -z "$DIALOG_BIN" ] ; then
 		echo "error: dialog UI not available" >&2
 		return 127
 	fi
-	# "command" is not used so we invoke the resolved binary path
+	# ncurses needs a sensible TERM on FreeBSD console
+	if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ] || [ "$TERM" = "unknown" ] ; then
+		TERM=xterm
+		export TERM
+	fi
 	"$DIALOG_BIN" "$@"
 }
 
-# Best-effort: reattach stdio to the controlling terminal when fds are not
-# ttys (some VM consoles). Never hard-fail — user is often just root on console.
-attach_tty_best_effort() {
-	if [ -t 0 ] && [ -t 1 ] && [ -t 2 ] ; then
-		return 0
-	fi
-	if [ -c /dev/tty ] && [ -r /dev/tty ] && [ -w /dev/tty ] ; then
-		exec </dev/tty >/dev/tty 2>/dev/tty || true
-	fi
-}
-
-# dialog/bsddialog draw UI on stderr. Redirecting stderr to a file (as we do for
-# CI logs) makes every menu invisible. Only steal stderr in noninteractive mode.
+# dialog/bsddialog draw UI on stderr. Only steal stderr in noninteractive mode.
 if is_noninteractive ; then
 	export ASSUME_ALWAYS_YES=yes
 	export IGNORE_OSVERSION="${IGNORE_OSVERSION:-yes}"
@@ -95,17 +87,22 @@ if is_noninteractive ; then
 	set -x
 	PS4="$0 $LINENO >"
 else
-	# Interactive: keep stderr on the TTY so menus work.
 	set +x
 	if ! resolve_dialog_bin ; then
-		echo "error: need a dialog UI for interactive install." >&2
-		echo "  FreeBSD base: bsddialog should be present." >&2
-		echo "  Or install:  pkg install misc/dialog" >&2
-		echo "  Or noninteractive: INSTALLX_NONINTERACTIVE=1 INSTALLX_DESKTOP=... $0" >&2
+		echo "error: need bsddialog (base) or dialog (pkg install misc/dialog)." >&2
+		echo "  Or: INSTALLX_NONINTERACTIVE=1 INSTALLX_DESKTOP=... $0" >&2
 		exit 1
 	fi
-	attach_tty_best_effort
-	echo "installx: interactive mode using ${DIALOG_BIN}. Log: $LOGFILE" | tee -a "$LOGFILE"
+	# Immediate UI so the user sees menus work before long pkg work
+	echo "installx: interactive mode using ${DIALOG_BIN} (TERM=${TERM:-?}). Log: $LOGFILE"
+	echo "installx: interactive mode using ${DIALOG_BIN}" >> "$LOGFILE"
+	if ! dialog --title "installx" --msgbox "Welcome to install-fbsd-desktop.\n\nUI: ${DIALOG_BIN}\n\nNext steps update the package catalog (may take a minute), then you pick a desktop — or Quit." 12 60 ; then
+		_drc=$?
+		echo "error: dialog/bsddialog failed to display (exit ${_drc})." >&2
+		echo "  TERM=${TERM:-unset} tty=$(tty 2>/dev/null || echo none)" >&2
+		echo "  Try: export TERM=xterm   then re-run as root." >&2
+		exit 1
+	fi
 fi
 
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
