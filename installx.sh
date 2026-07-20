@@ -35,8 +35,48 @@ is_noninteractive() {
 	[ "${INSTALLX_NONINTERACTIVE:-0}" = "1" ] || [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ]
 }
 
-# dialog(1) draws its UI on stderr. Redirecting stderr to a file (as we do for
-# CI logs) makes every dialog invisible. Only steal stderr in noninteractive mode.
+# UI helper: FreeBSD 14/15 ship bsddialog(1) in base; classic dialog(1) is the
+# ports package misc/dialog (may be absent). Prefer whatever is installed.
+# Both draw on stderr — do not redirect stderr in interactive mode.
+DIALOG_BIN=""
+resolve_dialog_bin() {
+	if command -v dialog >/dev/null 2>&1 ; then
+		DIALOG_BIN=$(command -v dialog)
+		return 0
+	fi
+	if command -v bsddialog >/dev/null 2>&1 ; then
+		DIALOG_BIN=$(command -v bsddialog)
+		return 0
+	fi
+	# Last resort: try to install the ports dialog package (if pkg works)
+	if command -v pkg >/dev/null 2>&1 ; then
+		echo "installx: no dialog/bsddialog found; trying pkg install misc/dialog …" | tee -a "$LOGFILE"
+		ASSUME_ALWAYS_YES=yes pkg install -y misc/dialog 2>/dev/null \
+			|| ASSUME_ALWAYS_YES=yes pkg install -y dialog 2>/dev/null || true
+	fi
+	if command -v dialog >/dev/null 2>&1 ; then
+		DIALOG_BIN=$(command -v dialog)
+		return 0
+	fi
+	if command -v bsddialog >/dev/null 2>&1 ; then
+		DIALOG_BIN=$(command -v bsddialog)
+		return 0
+	fi
+	return 1
+}
+
+# Wrapper so the rest of the script can keep calling dialog … (works for dialog or bsddialog)
+dialog() {
+	if [ -z "$DIALOG_BIN" ] ; then
+		echo "error: dialog UI not available" >&2
+		return 127
+	fi
+	# "command" is not used so we invoke the resolved binary path
+	"$DIALOG_BIN" "$@"
+}
+
+# dialog/bsddialog draw UI on stderr. Redirecting stderr to a file (as we do for
+# CI logs) makes every menu invisible. Only steal stderr in noninteractive mode.
 if is_noninteractive ; then
 	export ASSUME_ALWAYS_YES=yes
 	export IGNORE_OSVERSION="${IGNORE_OSVERSION:-yes}"
@@ -44,12 +84,13 @@ if is_noninteractive ; then
 	set -x
 	PS4="$0 $LINENO >"
 else
-	# Interactive: keep stderr on the TTY so dialog menus work.
+	# Interactive: keep stderr on the TTY so menus work.
 	set +x
-	if ! command -v dialog >/dev/null 2>&1 ; then
-		echo "error: dialog(1) is required for interactive install." >&2
-		echo "Install it with:  pkg install misc/dialog" >&2
-		echo "Or run noninteractive: INSTALLX_NONINTERACTIVE=1 INSTALLX_DESKTOP=... $0" >&2
+	if ! resolve_dialog_bin ; then
+		echo "error: need a dialog UI for interactive install." >&2
+		echo "  FreeBSD base: bsddialog should be present (pkg which -o bsddialog / usr.bin)." >&2
+		echo "  Or install:  pkg install misc/dialog" >&2
+		echo "  Or noninteractive: INSTALLX_NONINTERACTIVE=1 INSTALLX_DESKTOP=... $0" >&2
 		exit 1
 	fi
 	if [ ! -t 0 ] || [ ! -t 2 ] ; then
@@ -57,7 +98,7 @@ else
 		echo "For automation set INSTALLX_NONINTERACTIVE=1 and INSTALLX_DESKTOP=..." >&2
 		exit 1
 	fi
-	echo "installx: interactive mode (dialog menus). Log: $LOGFILE" | tee -a "$LOGFILE"
+	echo "installx: interactive mode using ${DIALOG_BIN}. Log: $LOGFILE" | tee -a "$LOGFILE"
 fi
 
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf

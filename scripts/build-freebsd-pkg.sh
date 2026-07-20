@@ -52,9 +52,8 @@ prefix: /usr/local
 categories: [sysutils]
 licenselogic: single
 licenses: [BSD3CLAUSE]
-deps: {
-  dialog: {origin: misc/dialog, version: ">=0"}
-}
+# dialog optional: FreeBSD base provides bsddialog; misc/dialog is a fallback
+deps: {}
 EOF
 
 if ! command -v pkg >/dev/null 2>&1 ; then
