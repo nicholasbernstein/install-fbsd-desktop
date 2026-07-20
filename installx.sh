@@ -75,7 +75,6 @@ resolve_dialog_bin() {
 # Child PIDs for long-running background work (pkg update, etc.). Do NOT
 # background dialog/bsddialog — that causes SIGTTOU suspend on exit (hang).
 INSTALLX_CHILD_PID=""
-INSTALLX_GAUGE_PID=""
 
 installx_kill_pid() {
 	_kp="$1"
@@ -93,8 +92,6 @@ installx_abort() {
 	echo "installx: Ctrl+C / signal ${_sig} — exiting." >> "$LOGFILE" 2>/dev/null || true
 	echo ""
 	echo "installx: Ctrl+C — exiting."
-	installx_kill_pid "${INSTALLX_GAUGE_PID:-}"
-	INSTALLX_GAUGE_PID=""
 	installx_kill_pid "${INSTALLX_CHILD_PID:-}"
 	INSTALLX_CHILD_PID=""
 	
@@ -120,68 +117,32 @@ installx_run_interruptible() {
 	return "${INSTALLX_RUN_RC}"
 }
 
-# Generic progress gauge while a background PID runs (pulsing bar).
-# Passes text once, and pipes ONLY integers to prevent bsddialog from tearing.
-installx_gauge_while_pid() {
-	_gtitle="$1"
-	_gtext=$(printf '%b' "$2")
-	_gpid="$3"
-
-	if [ -z "${DIALOG_BIN:-}" ] || [ -z "${_gpid}" ] ; then
-		wait "${_gpid}" 2>/dev/null || true
-		return 0
-	fi
-	if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ] || [ "$TERM" = "unknown" ] ; then
-		export TERM=xterm
-	fi
-
-	# By only feeding numbers (no XXX text replacement blocks), we update 
-	# the percentage bar smoothly without forcing bsddialog to redraw the window.
-	# MODIFIED: Changed sleep to 1 second and increment to 5 to prevent bsddialog freakouts on 15.1
-	(
-		_pct=0
-		while kill -0 "${_gpid}" 2>/dev/null ; do
-			echo "$_pct"
-			_pct=$((_pct + 5))
-			if [ "$_pct" -gt 95 ] ; then _pct=5 ; fi
-			sleep 1
-		done
-		echo "100"
-	) | "$DIALOG_BIN" --title "${_gtitle}" --gauge "${_gtext}" 10 70 0
-}
-
-# pkg update with an interactive gauge. Sets INSTALLX_RUN_RC.
+# pkg update with an interactive output box. Sets INSTALLX_RUN_RC.
 installx_pkg_update_with_progress() {
-	_gauge_title="${1:-Updating package catalog}"
-	_gauge_text="${2:-Updating the package catalog… Please wait. Ctrl+C aborts.}"
+	_box_title="${1:-Updating package catalog}"
 
-	# Log always; avoid printing to the console right before a gauge
-	echo "installx: ${_gauge_title}…" >> "$LOGFILE"
+	# Log always; avoid printing to the console right before the box
+	echo "installx: ${_box_title}…" >> "$LOGFILE"
+	
 	if is_noninteractive || [ -z "${DIALOG_BIN:-}" ] ; then
-		echo "installx: ${_gauge_title}…"
-		installx_run_interruptible sh -c "pkg update 2>&1 | tee -a \"${LOGFILE}\""
+		echo "installx: ${_box_title}…"
+		installx_run_interruptible sh -c "env ASSUME_ALWAYS_YES=yes pkg update 2>&1 | tee -a \"${LOGFILE}\""
 		return "${INSTALLX_RUN_RC}"
 	fi
 
-	_pkg_out=$(mktemp /tmp/installx-pkgup.XXXXXX) || _pkg_out="/tmp/installx-pkgup.$$"
-	_pkg_rcfile="${_pkg_out}.rc"
+	_pkg_rcfile=$(mktemp /tmp/installx-pkgup.XXXXXX) || _pkg_rcfile="/tmp/installx-pkgup.$$"
 
-	( env ASSUME_ALWAYS_YES=yes pkg update >"${_pkg_out}" 2>&1; echo $? >"${_pkg_rcfile}" ) &
-	INSTALLX_CHILD_PID=$!
-
-	installx_gauge_while_pid "${_gauge_title}" "${_gauge_text}" "${INSTALLX_CHILD_PID}"
-
-	wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
-	INSTALLX_CHILD_PID=""
+	# Run pkg update, capture its exit code, and stream output to both the log and the UI
+	(
+		env ASSUME_ALWAYS_YES=yes pkg update 2>&1
+		echo $? > "${_pkg_rcfile}"
+	) | tee -a "$LOGFILE" | "$DIALOG_BIN" --title "${_box_title}" --programbox 20 75
 
 	if [ -f "${_pkg_rcfile}" ] ; then
 		INSTALLX_RUN_RC=$(cat "${_pkg_rcfile}")
+		rm -f "${_pkg_rcfile}"
 	else
 		INSTALLX_RUN_RC=1
-	fi
-	if [ -f "${_pkg_out}" ] ; then
-		cat "${_pkg_out}" >> "$LOGFILE"
-		rm -f "${_pkg_out}" "${_pkg_rcfile}"
 	fi
 	return "${INSTALLX_RUN_RC}"
 }
@@ -399,8 +360,8 @@ You can cancel a screen with Esc, quit from the desktop menu, or press Ctrl+C to
 	fi
 fi
 
-# Progress UI starts right after OK (no silent work before the gauge)
-installx_pkg_update_with_progress "Package catalog" "Updating the package catalog… Please wait. Ctrl+C aborts."
+# Progress UI starts right after OK (no silent work before the programbox)
+installx_pkg_update_with_progress "Updating Package Catalog"
 report "pkg bootstrapping" "$INSTALLX_RUN_RC"
 if ! is_noninteractive ; then
 	echo "installx: package catalog ready; continuing…" >> "$LOGFILE"
@@ -484,7 +445,7 @@ fi
 if [ "$rolling" -eq 0  ] ; then 
 	change_pkg_url_to_latest
 	report "quarterly->latest changed" "$?"
-	installx_pkg_update_with_progress "Package catalog (latest)" "Refreshing the package catalog… Please wait. Ctrl+C aborts."
+	installx_pkg_update_with_progress "Updating Package Catalog (latest)"
 else
 	echo "pkg: staying on quarterly package set" | tee -a "$LOGFILE"
 fi
@@ -574,11 +535,11 @@ mkdir -p "${_val_dir}"
 INSTALLX_CHILD_PID=$!
 
 if ! is_noninteractive && [ -n "${DIALOG_BIN:-}" ] ; then
-	installx_gauge_while_pid "Checking desktops" "Checking which desktops can be installed… Querying the package catalog. Ctrl+C aborts." "${INSTALLX_CHILD_PID}"
+	"$DIALOG_BIN" --title "Checking desktops" --infobox "Checking which desktops can be installed…\n\nQuerying the package catalog in the background. Please wait." 10 70
+	wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
 else
 	wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
 fi
-wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
 INSTALLX_CHILD_PID=""
 
 AVAILABLE_DESKTOPS=$(cat "${_val_dir}/available" 2>/dev/null || true)
@@ -710,9 +671,25 @@ if [ "$SEATD_NEEDED" = "yes" ]; then
 fi
 
 if [ -n "$_install_pkgs" ]; then
-    installx_pkg_update_with_progress "Installing Desktops" "Installing selected desktop environments and dependencies... Ctrl+C aborts."
-    env ASSUME_ALWAYS_YES=yes pkg install -y $_install_pkgs >> "$LOGFILE" 2>&1
-    report "Package installation completed" "$?"
+    if ! is_noninteractive && [ -n "${DIALOG_BIN:-}" ] ; then
+        _pkg_rcfile=$(mktemp /tmp/installx-pkgin.XXXXXX) || _pkg_rcfile="/tmp/installx-pkgin.$$"
+        (
+            env ASSUME_ALWAYS_YES=yes pkg install -y $_install_pkgs 2>&1
+            echo $? > "${_pkg_rcfile}"
+        ) | tee -a "$LOGFILE" | "$DIALOG_BIN" --title "Installing Desktops" --programbox 20 75
+        
+        if [ -f "${_pkg_rcfile}" ] ; then
+            _rc=$(cat "${_pkg_rcfile}")
+            rm -f "${_pkg_rcfile}"
+        else
+            _rc=1
+        fi
+        report "Package installation completed" "$_rc"
+    else
+        echo "installx: Installing selected desktop environments..." >> "$LOGFILE"
+        env ASSUME_ALWAYS_YES=yes pkg install -y $_install_pkgs >> "$LOGFILE" 2>&1
+        report "Package installation completed" "$?"
+    fi
 fi
 
 # Cleanup and exit
