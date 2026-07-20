@@ -53,38 +53,32 @@ jobs:
   # Dialog / bsddialog UI smoke (Linux dialog + FreeBSD bsddialog + expect)
   # -------------------------------------------------------------------------
   dialog-ui-linux:
-    name: Dialog UI (Linux)
+    name: Dialog UI (Linux widgets)
     needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dialog + expect
+      - name: Install dialog
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq dialog expect
+          sudo apt-get install -y -qq dialog
 
       - name: Timeout-based dialog widgets
         run: |
           export TERM=xterm
           sh scripts/test-dialog-ui.sh
 
-      - name: Expect-drive installx welcome + Ctrl+C
-        run: |
-          set -euo pipefail
-          export TERM=xterm
-          # script(1) allocates a pseudo-TTY so ncurses/dialog can start
-          script -q -c "expect -f scripts/test-dialog-expect.exp" /dev/null
-
+  # One expect-driven interactive smoke (FreeBSD + bsddialog — matches real installs)
   dialog-ui-freebsd:
-    name: Dialog UI (FreeBSD)
+    name: Dialog UI (FreeBSD + expect)
     needs: lint
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: bsddialog + expect on FreeBSD VM
+      - name: bsddialog widgets + expect on FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         with:
           release: "14.4"
@@ -101,10 +95,9 @@ jobs:
             set -x
             cd "$GITHUB_WORKSPACE" 2>/dev/null || cd "$(pwd)"
             export TERM=xterm
-            # Base system should provide bsddialog
             which bsddialog || which dialog
             sh scripts/test-dialog-ui.sh
-            # FreeBSD script(1): script -q /dev/null command
+            # Single expect run (welcome + Ctrl+C) — not duplicated on Linux
             script -q /dev/null expect -f scripts/test-dialog-expect.exp
 
   # -------------------------------------------------------------------------

@@ -51,9 +51,9 @@ One workflow runs **everything** on every push, weekly schedule, PR, or manual
 dispatch (`.github/workflows/ci.yml`):
 
 1. **Lint** — shell/python syntax and FreeBSD release discovery script  
-2. **Dialog UI smokes** — `scripts/test-dialog-ui.sh` (timeout widgets) and
-   `scripts/test-dialog-expect.exp` (welcome + Ctrl+C) on Linux `dialog` and
-   FreeBSD `bsddialog`  
+2. **Dialog UI smokes** — widget checks via `scripts/test-dialog-ui.sh` (Linux
+   `dialog` + FreeBSD `bsddialog`); one expect run on FreeBSD only
+   (`scripts/test-dialog-expect.exp`: welcome + Ctrl+C)  
 3. **All desktop smokes** (in parallel) — each desktop × currently supported
    FreeBSD releases ([security.freebsd.org](https://www.freebsd.org/security/#sup),
    via `scripts/freebsd-supported-releases.py`)  
