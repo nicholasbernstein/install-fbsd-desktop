@@ -3,13 +3,11 @@
 # most of this comes from the freebsd handbook 5.4.1. Quick Start x-config
 set -o pipefail
 #set -e
-set -x
-PS4="$0 $LINENO >"
 
 LOGFILE="installx.log"
 ERRLOG="installx.err"
-exec 2>"$ERRLOG"
 date > "$LOGFILE"
+: > "$ERRLOG"
 
 # Non-interactive / CI mode: set INSTALLX_NONINTERACTIVE=1 (or CI=true).
 # Optional env overrides:
@@ -37,10 +35,29 @@ is_noninteractive() {
 	[ "${INSTALLX_NONINTERACTIVE:-0}" = "1" ] || [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ]
 }
 
-# Avoid interactive pkg prompts (and OSVERSION skew) when driven by CI
+# dialog(1) draws its UI on stderr. Redirecting stderr to a file (as we do for
+# CI logs) makes every dialog invisible. Only steal stderr in noninteractive mode.
 if is_noninteractive ; then
 	export ASSUME_ALWAYS_YES=yes
 	export IGNORE_OSVERSION="${IGNORE_OSVERSION:-yes}"
+	exec 2>>"$ERRLOG"
+	set -x
+	PS4="$0 $LINENO >"
+else
+	# Interactive: keep stderr on the TTY so dialog menus work.
+	set +x
+	if ! command -v dialog >/dev/null 2>&1 ; then
+		echo "error: dialog(1) is required for interactive install." >&2
+		echo "Install it with:  pkg install misc/dialog" >&2
+		echo "Or run noninteractive: INSTALLX_NONINTERACTIVE=1 INSTALLX_DESKTOP=... $0" >&2
+		exit 1
+	fi
+	if [ ! -t 0 ] || [ ! -t 2 ] ; then
+		echo "error: interactive install needs a real terminal (stdin + stderr)." >&2
+		echo "For automation set INSTALLX_NONINTERACTIVE=1 and INSTALLX_DESKTOP=..." >&2
+		exit 1
+	fi
+	echo "installx: interactive mode (dialog menus). Log: $LOGFILE" | tee -a "$LOGFILE"
 fi
 
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
