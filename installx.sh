@@ -65,33 +65,58 @@ resolve_dialog_bin() {
 	return 1
 }
 
-# Wrapper: rest of script keeps calling dialog …
-dialog() {
-	if [ -z "$DIALOG_BIN" ] ; then
-		echo "error: dialog UI not available" >&2
-		return 127
-	fi
-	# ncurses needs a sensible TERM on FreeBSD console
-	if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ] || [ "$TERM" = "unknown" ] ; then
-		TERM=xterm
-		export TERM
-	fi
-	"$DIALOG_BIN" "$@"
-}
+# Child PIDs we may need to kill on Ctrl+C (ncurses dialog swallows SIGINT if
+# it is the foreground process — so we run it in the background and wait).
+INSTALLX_CHILD_PID=""
 
-# Clean abort on Ctrl+C (SIGINT) / SIGTERM. Note: Ctrl+X is NOT an interrupt —
-# use Ctrl+C, or Esc in menus, or the Quit menu item.
+# Clean abort on Ctrl+C (SIGINT) / SIGTERM.
 installx_abort() {
 	_sig=${1:-INT}
-	echo "" | tee -a "$LOGFILE"
-	echo "installx: caught signal ${_sig} — exiting." | tee -a "$LOGFILE"
-	# Restore default handlers and re-raise for proper shell status when possible
+	echo "" >> "$LOGFILE" 2>/dev/null || true
+	echo "installx: Ctrl+C / signal ${_sig} — exiting." >> "$LOGFILE" 2>/dev/null || true
+	echo ""
+	echo "installx: Ctrl+C — exiting."
+	if [ -n "${INSTALLX_CHILD_PID:-}" ] ; then
+		kill -TERM "${INSTALLX_CHILD_PID}" 2>/dev/null || true
+		kill -KILL "${INSTALLX_CHILD_PID}" 2>/dev/null || true
+		wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
+		INSTALLX_CHILD_PID=""
+	fi
+	# Stop any remaining children of this shell (pkg, etc.)
+	kill -TERM -$$ 2>/dev/null || true
 	trap - INT TERM HUP
 	exit 130
 }
 trap 'installx_abort INT' INT
 trap 'installx_abort TERM' TERM
 trap 'installx_abort HUP' HUP
+
+# Run a command in the background so Ctrl+C hits our trap (not only ncurses).
+# Usage: installx_run_interruptible cmd [args...]
+# Sets $INSTALLX_RUN_RC to the child's exit status.
+installx_run_interruptible() {
+	"$@" &
+	INSTALLX_CHILD_PID=$!
+	wait "${INSTALLX_CHILD_PID}"
+	INSTALLX_RUN_RC=$?
+	INSTALLX_CHILD_PID=""
+	return "${INSTALLX_RUN_RC}"
+}
+
+# Wrapper: rest of script keeps calling dialog …
+# Runs the UI as a child so SIGINT is delivered to this shell's trap.
+dialog() {
+	if [ -z "$DIALOG_BIN" ] ; then
+		echo "error: dialog UI not available" >&2
+		return 127
+	fi
+	if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ] || [ "$TERM" = "unknown" ] ; then
+		TERM=xterm
+		export TERM
+	fi
+	installx_run_interruptible "$DIALOG_BIN" "$@"
+	return $?
+}
 
 # dialog/bsddialog draw UI on stderr. Only steal stderr in noninteractive mode.
 if is_noninteractive ; then
@@ -102,7 +127,7 @@ if is_noninteractive ; then
 	PS4="$0 $LINENO >"
 else
 	set +x
-	# Ensure interrupt characters are enabled on the tty (Ctrl+C = INTR)
+	# Ctrl+C = INTR on this tty
 	stty isig 2>/dev/null || true
 	stty intr '^C' 2>/dev/null || true
 	if ! resolve_dialog_bin ; then
@@ -110,22 +135,22 @@ else
 		echo "  Or: INSTALLX_NONINTERACTIVE=1 INSTALLX_DESKTOP=... $0" >&2
 		exit 1
 	fi
-	# Immediate UI so the user sees menus work before long pkg work
 	echo "installx: interactive mode using ${DIALOG_BIN} (TERM=${TERM:-?}). Log: $LOGFILE"
-	echo "installx: Press Ctrl+C to abort anytime; Esc cancels a dialog; Quit on desktop menu exits."
+	echo "installx: Ctrl+C aborts the script. Esc cancels a dialog. Quit exits from the desktop menu."
 	echo "installx: interactive mode using ${DIALOG_BIN}" >> "$LOGFILE"
-	dialog --title "installx" --msgbox "Welcome to install-fbsd-desktop.\n\nUI: ${DIALOG_BIN}\n\nKeys:\n  Enter  — OK / continue\n  Esc    — cancel this dialog\n  Ctrl+C — abort the whole script\n\n(Ctrl+X does nothing special — use Ctrl+C.)\n\nNext: package catalog update (may take a minute), then pick a desktop or Quit." 16 62
+	dialog --title "installx" --msgbox "Welcome to install-fbsd-desktop.\n\nUI: ${DIALOG_BIN}\n\nKeys:\n  Enter  — OK / continue\n  Esc    — cancel this dialog\n  Ctrl+C — abort the whole script\n\nNext: package catalog update (may take a minute), then pick a desktop or Quit." 15 62
 	_drc=$?
-	# 0 = OK; 1 / 255 = cancel/Esc — clean quit; other = real failure
+	# wait returns 128+N if child died from signal N; treat as abort
+	if [ "$_drc" -ge 128 ] ; then
+		installx_abort INT
+	fi
+	# 0 = OK; 1 / 255 = cancel/Esc — clean quit
 	if [ "$_drc" -eq 1 ] || [ "$_drc" -eq 255 ] ; then
 		echo "installx: cancelled at welcome screen." | tee -a "$LOGFILE"
 		exit 0
 	fi
 	if [ "$_drc" -ne 0 ] ; then
-		echo "error: dialog/bsddialog failed to display (exit ${_drc})." >&2
-		echo "  TERM=${TERM:-unset} tty=$(tty 2>/dev/null || echo none)" >&2
-		echo "  Try: export TERM=xterm   then re-run as root." >&2
-		echo "  Abort stuck processes with Ctrl+C from another console (Alt+F2)." >&2
+		echo "error: dialog/bsddialog failed (exit ${_drc}). TERM=${TERM:-unset}" >&2
 		exit 1
 	fi
 fi
@@ -260,10 +285,11 @@ report(){
 # this is mainly just to make sure pkg has been bootstrapped
 export ASSUME_ALWAYS_YES=yes
 if ! is_noninteractive ; then
-	echo "installx: updating package catalog (pkg update) — please wait…" | tee -a "$LOGFILE"
+	echo "installx: updating package catalog (pkg update) — please wait (Ctrl+C aborts)…" | tee -a "$LOGFILE"
 fi
-pkg update | tee -a "$LOGFILE"
-report "pkg bootstrapping" "$?"
+# Interruptible: background+wait so our INT trap runs (pkg alone can feel unresponsive)
+installx_run_interruptible sh -c "pkg update 2>&1 | tee -a \"${LOGFILE}\""
+report "pkg bootstrapping" "$INSTALLX_RUN_RC"
 if ! is_noninteractive ; then
 	echo "installx: package catalog ready; continuing…" | tee -a "$LOGFILE"
 fi
@@ -455,7 +481,10 @@ if [ "$rolling" -eq 0  ] ; then
 	change_pkg_url_to_latest
 	report "quarterly->latest changed" "$?"
 	# Catalog must match the repo we will install from
-	pkg update | tee -a "$LOGFILE"
+	if ! is_noninteractive ; then
+		echo "installx: refreshing package catalog after switching to latest…" | tee -a "$LOGFILE"
+	fi
+	installx_run_interruptible sh -c "pkg update 2>&1 | tee -a \"${LOGFILE}\""
 fi
 
 # ---------------------------------------------------------------------------
@@ -1367,12 +1396,20 @@ if ( echo "$all_pkgs" | grep -q "sudo" ) ; then
 fi
 
 echo "pkg install -y $all_pkgs" | tee -a "$LOGFILE"
-pkg install -y $all_pkgs | tee -a "$LOGFILE"
-pkg_status=$?
+if ! is_noninteractive ; then
+	echo "installx: installing packages (Ctrl+C aborts)…" | tee -a "$LOGFILE"
+fi
+# Quote carefully for nested sh -c
+installx_run_interruptible sh -c "pkg install -y $all_pkgs 2>&1 | tee -a \"${LOGFILE}\""
+pkg_status=$INSTALLX_RUN_RC
 report "package installation: " "$pkg_status"
 if [ "$pkg_status" -ne 0 ] && is_noninteractive ; then
 	echo "FATAL: package installation failed in noninteractive mode (status=$pkg_status)" | tee -a "$LOGFILE"
 	exit 1
+fi
+if [ "$pkg_status" -ge 128 ] ; then
+	# killed by signal (e.g. Ctrl+C) — trap should have exited; belt and suspenders
+	installx_abort INT
 fi
 
 # post install stuff
