@@ -192,11 +192,6 @@ export ASSUME_ALWAYS_YES=yes
 pkg update | tee -a "$LOGFILE"
 report "pkg bootstrapping" "$?"
 
-# this will help with performance of desktop applications
-# and may help perf during install, so I'm doing it early
-adjust_sysctl_buffers
-report "add sync buffers" "$?"
-
 add_user_to_video() {
 	# Your user needs to be in the video group to use video acceleration
 	default_user=`grep 1001 /etc/passwd | awk -F: '{ print $1 }'`
@@ -225,8 +220,6 @@ add_user_to_video() {
 	report "add root to wheel group" "$?"
 }
 
-add_user_to_video
-
 gen_xinit() {
 	# the following creates a .xinitrc file in the user's home directory that will launch
 	# the installed windowmanager as well as allow the slim display manager to pass it as
@@ -251,6 +244,7 @@ NEED_XORG="yes"             # install xorg stack
 SEATD_NEEDED="no"           # wayland compositors need seatd
 DISPLAY_MGR="sddm"          # sddm | slim | gdm | ly | none
 DESKTOP_PKGS=""
+XINIT_CMD=""                # set by desktop profile; gen_xinit after user exists
 WAYLAND_COMPOSITOR=""       # sway | hyprland | ...
 slim_extra_pkgs=""
 
@@ -509,14 +503,14 @@ UNAVAILABLE_DESKTOPS=$(echo "$UNAVAILABLE_DESKTOPS" | sed 's/^ *//')
 if [ -n "$UNAVAILABLE_DESKTOPS" ] ; then
 	echo "pkg: desktops removed from selection: $UNAVAILABLE_DESKTOPS" | tee -a "$LOGFILE"
 	if ! is_noninteractive ; then
-		dialog --title "Unavailable desktops" --msgbox "These desktops were removed because required packages are not in the pkg catalog:${UNAVAILABLE_DESKTOP_DETAIL}\n\n(Often a renamed/removed port — e.g. old plasma5 names.)\nSee installx.log for details." 0 0
+		dialog --title "Unavailable desktops" --msgbox "These desktops cannot be installed (packages missing from the pkg catalog):${UNAVAILABLE_DESKTOP_DETAIL}\n\nOn the next screen, pick a viable desktop — or choose Quit to exit without changing the system.\n\nSee installx.log for details." 0 0
 	fi
 fi
 
 if [ -z "$AVAILABLE_DESKTOPS" ] ; then
 	echo "FATAL: no desktops have all required packages available in the catalog." | tee -a "$LOGFILE"
 	if ! is_noninteractive ; then
-		dialog --msgbox "No desktop options are installable from the current package catalog. Check network/pkg and installx.log." 0 0
+		dialog --msgbox "No desktop options are installable from the current package catalog.\n\nNothing has been installed yet. Fix pkg/network and re-run, or exit.\n\nSee installx.log." 0 0
 	fi
 	exit 1
 fi
@@ -546,17 +540,20 @@ if is_noninteractive ; then
 		exit 1
 	fi
 else
-	# Build dialog --menu args only for available desktops
-	_menu_cmd='dialog --clear --title "Select Desktop" --menu "Select desktop environment or compositor to install:\n(X11 and Wayland listed together; unavailable options already removed.)" 0 0 0'
+	# Build dialog --menu args only for available desktops + Quit
+	_menu_cmd='dialog --clear --title "Select Desktop" --menu "Select a desktop that is available in the package catalog.\nUnavailable options were already removed.\nChoose Quit to exit without installing." 0 0 0'
 	for _tag in $AVAILABLE_DESKTOPS ; do
 		_lab=$(desktop_menu_label "$_tag")
 		_menu_cmd="$_menu_cmd \"$_tag\" \"$_lab\""
 	done
-	_menu_cmd="$_menu_cmd --stdout"
-	desktop=$(eval "$_menu_cmd") || true
-	if [ -z "$desktop" ] ; then
-		echo "No desktop selected; exiting." | tee -a "$LOGFILE"
-		exit 1
+	_menu_cmd="$_menu_cmd \"Quit\" \"Exit without installing anything\" --stdout"
+	desktop=$(eval "$_menu_cmd") || desktop="Quit"
+	if [ -z "$desktop" ] || [ "$desktop" = "Quit" ] ; then
+		echo "User quit before install; no changes from desktop selection." | tee -a "$LOGFILE"
+		if [ "$desktop" = "Quit" ] ; then
+			dialog --msgbox "Exiting. No desktop packages were installed." 0 0 || true
+		fi
+		exit 0
 	fi
 fi
 
@@ -566,12 +563,12 @@ desktop_key=$(echo "$desktop" | tr '[:upper:]' '[:lower:]')
 case $desktop_key in
   kde)
       # FreeBSD handbook: pkg install kde (Plasma 6 meta); X11 session is startplasma-x11
-      gen_xinit "startplasma-x11"
+      XINIT_CMD="startplasma-x11"
       DESKTOP_PKGS="kde"
       DISPLAY_MGR="sddm"
       ;;
   windowmaker)
-      gen_xinit "/usr/local/bin/wmaker"
+      XINIT_CMD="/usr/local/bin/wmaker"
       DESKTOP_PKGS="windowmaker wmakerconf"
       DISPLAY_MGR="sddm"
       mkdir -p /usr/local/share/xsessions
@@ -586,38 +583,38 @@ Type=Application
 EOT
       ;;
   lxqt)
-      gen_xinit "startlxqt"
+      XINIT_CMD="startlxqt"
       DESKTOP_PKGS="lxqt"
       DISPLAY_MGR="sddm"
       ;;
   lxde)
-      gen_xinit "startlxde"
+      XINIT_CMD="startlxde"
       DESKTOP_PKGS="lxde-meta lxde-common"
       DISPLAY_MGR="sddm"
       ;;
   gnome)
-      gen_xinit "gnome-session"
+      XINIT_CMD="gnome-session"
       DESKTOP_PKGS="gnome"
       DISPLAY_MGR="gdm"
       sysrc gnome_enable="YES"
       ;;
   xfce4|xfce)
-      gen_xinit "startxfce4"
+      XINIT_CMD="startxfce4"
       DESKTOP_PKGS="xfce xfce4-goodies"
       DISPLAY_MGR="sddm"
       ;;
   mate)
-      gen_xinit "mate-session"
+      XINIT_CMD="mate-session"
       DESKTOP_PKGS="mate"
       DISPLAY_MGR="sddm"
       ;;
   cinnamon)
-      gen_xinit "cinnamon-session"
+      XINIT_CMD="cinnamon-session"
       DESKTOP_PKGS="cinnamon"
       DISPLAY_MGR="sddm"
       ;;
   awesome)
-      gen_xinit "awesome"
+      XINIT_CMD="awesome"
       DESKTOP_PKGS="awesome"
       DISPLAY_MGR="sddm"
       ;;
@@ -628,6 +625,7 @@ EOT
       DISPLAY_MGR="ly"
       WAYLAND_COMPOSITOR="sway"
       DESKTOP_PKGS="sway swayidle swaylock-effects alacritty waybar"
+      XINIT_CMD=""
       ;;
   hyprland)
       SESSION_TYPE="wayland"
@@ -636,6 +634,7 @@ EOT
       DISPLAY_MGR="ly"
       WAYLAND_COMPOSITOR="hyprland"
       DESKTOP_PKGS="hyprland alacritty"
+      XINIT_CMD=""
       ;;
   *)
      echo "$desktop isn't a valid option."
@@ -648,6 +647,16 @@ esac
 echo "profile: desktop=$desktop_key session=$SESSION_TYPE display_mgr=$DISPLAY_MGR need_xorg=$NEED_XORG" | tee -a "$LOGFILE"
 apply_display_manager
 report "Desktop Selected" "$?"
+
+# User account next (needed for .xinitrc / home config) — after a viable desktop is chosen
+# this will help with performance of desktop applications
+adjust_sysctl_buffers
+report "add sync buffers" "$?"
+
+add_user_to_video
+if [ -n "$XINIT_CMD" ] ; then
+	gen_xinit "$XINIT_CMD"
+fi
 
 # The following are generally needed by most modern desktops
 sysrc dbus_enable="YES"
@@ -1244,13 +1253,15 @@ if ! pkgs_find_missing $_required_final ; then
 fi
 
 # Optional packages (extras, audio helpers, video DDX, etc.): drop missing rather than fail
-_before_all="$all_pkgs"
 all_pkgs=$(pkgs_filter_available $all_pkgs)
 if [ -z "$all_pkgs" ] ; then
 	echo "FATAL: package list empty after catalog filter" | tee -a "$LOGFILE"
 	exit 1
 fi
 echo "pkg: final install set: $all_pkgs" | tee -a "$LOGFILE"
+
+# Graphics driver packages in vc_pkgs that vanished: already filtered from all_pkgs;
+# if a whole GPU selection had only invalid names, user already saw probe/show path.
 
 # check to see if we should set the user shell to bash
 # (moved after all_pkgs is known; previously referenced all_pkgs before it was set)
