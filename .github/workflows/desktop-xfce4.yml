@@ -1,0 +1,23 @@
+name: Desktop / Xfce4
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    - cron: "40 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-xfce4-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    uses: ./.github/workflows/smoketest-reusable.yml
+    with:
+      desktop: Xfce4
+      # Full DE: prefer full xorg set
+      minimal_xorg: false
+      mem: "8192"
+      timeout_minutes: 150

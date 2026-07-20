@@ -268,9 +268,11 @@ else
 fi
 
 # for any additional entries, please add a case statement below
+# Normalize so dialog labels (WindowMaker, Xfce4, …) and CI env vars match.
+desktop_key=$(echo "$desktop" | tr '[:upper:]' '[:lower:]')
 
-case $desktop in
-  KDE)
+case $desktop_key in
+  kde)
       gen_xinit "startkde"
       DESKTOP_PGKS="kde5 plasma5-plasma plasma5-plasma-disks plasma5-plasma-systemmonitor kde-baseapps ${mywm}" 
       sysrc ${mywm}_enable="YES"
@@ -279,6 +281,7 @@ case $desktop in
       gen_xinit "/usr/local/bin/wmaker"
       DESKTOP_PGKS="windowmaker wmakerconf ${mywm}" 
       sysrc ${mywm}_enable="YES"
+      mkdir -p /usr/local/share/xsessions
 cat <<EOT >/usr/local/share/xsessions/wmaker.desktop
 [Desktop Entry]
 Encoding=UTF-8
@@ -289,29 +292,29 @@ Icon=
 Type=Application
 EOT
       ;;
-  LXQT)
+  lxqt)
       gen_xinit "startlxqt"
       DESKTOP_PGKS="lxqt ${mywm}" 
       sysrc ${mywm}_enable="YES"
       ;;
-  LXDE)
+  lxde)
       gen_xinit "startlxde"
       DESKTOP_PGKS="lxde-meta lxde-common ${mywm}" 
       sysrc ${mywm}_enable="YES"
       ;;
-  GNOME)
+  gnome)
       gen_xinit "gnome-session"
       DESKTOP_PGKS="gnome" 
       sysrc gnome_enable="YES"
       sysrc gdm_enable="YES"
       sysrc ${mywm}_enable="NO"
       ;;
-  xfce4)
+  xfce4|xfce)
       gen_xinit "startxfce4"
       DESKTOP_PGKS="xfce xfce4-goodies ${mywm}" 
       sysrc ${mywm}_enable="YES"
       ;;
-  MATE)
+  mate)
       gen_xinit "mate-session"
       echo $desktop
       DESKTOP_PGKS="mate ${mywm}" 
@@ -324,6 +327,9 @@ EOT
       ;;
   *)
      echo "$desktop isn't a valid option."
+     if is_noninteractive ; then
+       exit 1
+     fi
      ;;
 esac
 
@@ -535,7 +541,7 @@ if [ "${sudo_yes:-1}" -eq 0 ] ; then
 fi
 
 # on 11.x w/ mate re-installing fixed a core-dump
-if [ $desktop = "mate" ] ; then 
+if [ "$desktop_key" = "mate" ] ; then 
 	if ( echo $(uname -r) | grep -q "11" ) ; then 
 		pkg install -f gsettings-desktop-schemas
 	fi

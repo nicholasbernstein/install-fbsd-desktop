@@ -1,0 +1,131 @@
+# Reusable FreeBSD desktop install smoketest.
+# Called by per-desktop workflows (desktop-*.yml). Do not trigger directly.
+
+name: Smoketest (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      desktop:
+        description: "Desktop key for INSTALLX_DESKTOP (e.g. awesome, KDE, GNOME)"
+        required: true
+        type: string
+      release:
+        description: "FreeBSD release for vmactions/freebsd-vm"
+        required: false
+        type: string
+        default: "14.4"
+      minimal_xorg:
+        description: "Install xorg-minimal instead of full xorg"
+        required: false
+        type: boolean
+        default: true
+      mem:
+        description: "VM memory in MB"
+        required: false
+        type: string
+        default: "8192"
+      timeout_minutes:
+        description: "Job timeout"
+        required: false
+        type: number
+        default: 120
+
+jobs:
+  smoketest:
+    name: ${{ inputs.desktop }} on FreeBSD ${{ inputs.release }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ${{ inputs.desktop }} via installx.sh
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: ${{ inputs.release }}
+          usesh: true
+          mem: ${{ inputs.mem }}
+          copyback: true
+          prepare: |
+            set -e
+            export ASSUME_ALWAYS_YES=yes
+            export IGNORE_OSVERSION=yes
+            pkg update -f
+            pkg install -y pkgconf
+          run: |
+            set -e
+            set -x
+            export ASSUME_ALWAYS_YES=yes
+            export IGNORE_OSVERSION=yes
+            cd "$GITHUB_WORKSPACE" 2>/dev/null || cd "$(pwd)"
+            freebsd-version
+            uname -a
+
+            TESTUSER=nick
+            pw groupadd video 2>/dev/null || true
+            if ! id "$TESTUSER" >/dev/null 2>&1; then
+              pw useradd -n "$TESTUSER" -m -s /bin/sh
+            fi
+            pw groupmod video -m "$TESTUSER" 2>/dev/null || true
+            pw groupmod wheel -m "$TESTUSER" 2>/dev/null || true
+
+            mkdir -p /boot /etc/pkg
+            touch /boot/loader.conf
+            touch /etc/fstab
+            touch /etc/sysctl.conf
+
+            # Shared opts that exercise fuse/ipfw checks in test_installx.sh
+            BASE_OPT="load_card_readers load_atapi load_fuse enable_tmpfs enable_async_io enable_workstation_pwr_mgmnt enable_ipfw_firewall"
+            if [ "${{ inputs.minimal_xorg }}" = "true" ]; then
+              INSTALLX_OPT="$BASE_OPT minimal_xorg"
+            else
+              INSTALLX_OPT="$BASE_OPT"
+            fi
+
+            export CI=true
+            export INSTALLX_NONINTERACTIVE=1
+            export INSTALLX_USER="$TESTUSER"
+            export INSTALLX_DESKTOP="${{ inputs.desktop }}"
+            export INSTALLX_ROLLING=yes
+            export INSTALLX_EXTRA_PKGS="bash sudo"
+            export INSTALLX_GRAPHICS=no
+            export INSTALLX_OPT
+            export INSTALLX_BASH_SHELL=yes
+            export INSTALLX_SUDO_WHEEL=yes
+
+            echo "==== installx.sh desktop=$INSTALLX_DESKTOP minimal_xorg=${{ inputs.minimal_xorg }} ===="
+            if ! sh ./installx.sh; then
+              echo "installx.sh failed; dumping logs" >&2
+              tail -n 200 installx.log 2>/dev/null || true
+              tail -n 200 installx.err 2>/dev/null || true
+              exit 1
+            fi
+
+            echo "==== installx.log (tail) ===="
+            tail -n 100 installx.log || true
+
+            echo "==== shunit2 post-install tests ===="
+            if ! sh ./test_installx.sh; then
+              echo "shunit2 tests failed" >&2
+              echo "---- /etc/rc.conf ----"
+              cat /etc/rc.conf || true
+              echo "---- /boot/loader.conf ----"
+              cat /boot/loader.conf || true
+              echo "---- /etc/fstab ----"
+              cat /etc/fstab || true
+              echo "---- groups ----"
+              grep -E 'video|wheel' /etc/group || true
+              exit 1
+            fi
+
+            echo "==== Smoketest passed: ${{ inputs.desktop }} ===="
+
+      - name: Upload install logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installx-logs-${{ inputs.desktop }}-${{ inputs.release }}-${{ github.run_id }}
+          path: |
+            installx.log
+            installx.err
+          if-no-files-found: ignore

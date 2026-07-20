@@ -16,8 +16,25 @@ fetch https://raw.githubusercontent.com/nicholasbernstein/install-fbsd-desktop/m
 
 ## CI / non-interactive install
 
-GitHub Actions smoketests run weekly and on push (see `.github/workflows/smoketest.yml`).
-They drive `installx.sh` without `dialog` menus:
+Each desktop has its own GitHub Actions workflow under `.github/workflows/desktop-*.yml`.
+They all call the shared runner in `smoketest-reusable.yml` (FreeBSD VM → noninteractive
+`installx.sh` → `test_installx.sh`).
+
+| Workflow | Desktop | On push | Weekly | Manual |
+|----------|---------|---------|--------|--------|
+| `desktop-awesome.yml` | awesome | yes | yes | yes |
+| `desktop-windowmaker.yml` | WindowMaker | yes | yes | yes |
+| `desktop-lxde.yml` | LXDE | yes | yes | yes |
+| `desktop-lxqt.yml` | LXQT | yes | yes | yes |
+| `desktop-xfce4.yml` | Xfce4 | yes | yes | yes |
+| `desktop-mate.yml` | MATE | PR only | yes | yes |
+| `desktop-kde.yml` | KDE | PR only | yes | yes |
+| `desktop-gnome.yml` | GNOME | PR only | yes | yes |
+
+Heavier DEs (MATE/KDE/GNOME) skip plain pushes so default CI stays lighter; re-run any
+workflow from the Actions tab (`workflow_dispatch`).
+
+Noninteractive env knobs (also used by CI):
 
 ```sh
 export INSTALLX_NONINTERACTIVE=1   # or CI=true

@@ -1,0 +1,22 @@
+# Heavier DE — weekly + manual by default (also runs on PR for coverage).
+
+name: Desktop / MATE
+
+on:
+  pull_request:
+  schedule:
+    - cron: "50 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-mate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    uses: ./.github/workflows/smoketest-reusable.yml
+    with:
+      desktop: MATE
+      minimal_xorg: false
+      mem: "10240"
+      timeout_minutes: 180

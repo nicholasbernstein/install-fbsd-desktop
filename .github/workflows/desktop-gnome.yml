@@ -1,0 +1,22 @@
+# Heavy DE — weekly + manual (+ PR). Skip push to keep default CI lighter.
+
+name: Desktop / GNOME
+
+on:
+  pull_request:
+  schedule:
+    - cron: "20 7 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-gnome-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    uses: ./.github/workflows/smoketest-reusable.yml
+    with:
+      desktop: GNOME
+      minimal_xorg: false
+      mem: "12288"
+      timeout_minutes: 180
