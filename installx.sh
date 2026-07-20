@@ -79,6 +79,20 @@ dialog() {
 	"$DIALOG_BIN" "$@"
 }
 
+# Clean abort on Ctrl+C (SIGINT) / SIGTERM. Note: Ctrl+X is NOT an interrupt —
+# use Ctrl+C, or Esc in menus, or the Quit menu item.
+installx_abort() {
+	_sig=${1:-INT}
+	echo "" | tee -a "$LOGFILE"
+	echo "installx: caught signal ${_sig} — exiting." | tee -a "$LOGFILE"
+	# Restore default handlers and re-raise for proper shell status when possible
+	trap - INT TERM HUP
+	exit 130
+}
+trap 'installx_abort INT' INT
+trap 'installx_abort TERM' TERM
+trap 'installx_abort HUP' HUP
+
 # dialog/bsddialog draw UI on stderr. Only steal stderr in noninteractive mode.
 if is_noninteractive ; then
 	export ASSUME_ALWAYS_YES=yes
@@ -88,6 +102,9 @@ if is_noninteractive ; then
 	PS4="$0 $LINENO >"
 else
 	set +x
+	# Ensure interrupt characters are enabled on the tty (Ctrl+C = INTR)
+	stty isig 2>/dev/null || true
+	stty intr '^C' 2>/dev/null || true
 	if ! resolve_dialog_bin ; then
 		echo "error: need bsddialog (base) or dialog (pkg install misc/dialog)." >&2
 		echo "  Or: INSTALLX_NONINTERACTIVE=1 INSTALLX_DESKTOP=... $0" >&2
@@ -95,12 +112,20 @@ else
 	fi
 	# Immediate UI so the user sees menus work before long pkg work
 	echo "installx: interactive mode using ${DIALOG_BIN} (TERM=${TERM:-?}). Log: $LOGFILE"
+	echo "installx: Press Ctrl+C to abort anytime; Esc cancels a dialog; Quit on desktop menu exits."
 	echo "installx: interactive mode using ${DIALOG_BIN}" >> "$LOGFILE"
-	if ! dialog --title "installx" --msgbox "Welcome to install-fbsd-desktop.\n\nUI: ${DIALOG_BIN}\n\nNext steps update the package catalog (may take a minute), then you pick a desktop — or Quit." 12 60 ; then
-		_drc=$?
+	dialog --title "installx" --msgbox "Welcome to install-fbsd-desktop.\n\nUI: ${DIALOG_BIN}\n\nKeys:\n  Enter  — OK / continue\n  Esc    — cancel this dialog\n  Ctrl+C — abort the whole script\n\n(Ctrl+X does nothing special — use Ctrl+C.)\n\nNext: package catalog update (may take a minute), then pick a desktop or Quit." 16 62
+	_drc=$?
+	# 0 = OK; 1 / 255 = cancel/Esc — clean quit; other = real failure
+	if [ "$_drc" -eq 1 ] || [ "$_drc" -eq 255 ] ; then
+		echo "installx: cancelled at welcome screen." | tee -a "$LOGFILE"
+		exit 0
+	fi
+	if [ "$_drc" -ne 0 ] ; then
 		echo "error: dialog/bsddialog failed to display (exit ${_drc})." >&2
 		echo "  TERM=${TERM:-unset} tty=$(tty 2>/dev/null || echo none)" >&2
 		echo "  Try: export TERM=xterm   then re-run as root." >&2
+		echo "  Abort stuck processes with Ctrl+C from another console (Alt+F2)." >&2
 		exit 1
 	fi
 fi
@@ -234,8 +259,14 @@ report(){
 
 # this is mainly just to make sure pkg has been bootstrapped
 export ASSUME_ALWAYS_YES=yes
+if ! is_noninteractive ; then
+	echo "installx: updating package catalog (pkg update) — please wait…" | tee -a "$LOGFILE"
+fi
 pkg update | tee -a "$LOGFILE"
 report "pkg bootstrapping" "$?"
+if ! is_noninteractive ; then
+	echo "installx: package catalog ready; continuing…" | tee -a "$LOGFILE"
+fi
 
 add_user_to_video() {
 	# Your user needs to be in the video group to use video acceleration
