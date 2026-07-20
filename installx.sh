@@ -67,8 +67,8 @@ resolve_dialog_bin() {
 	return 1
 }
 
-# Child PIDs we may need to kill on Ctrl+C (ncurses dialog swallows SIGINT if
-# it is the foreground process — so we run it in the background and wait).
+# Child PIDs for long-running background work (pkg update, etc.). Do NOT
+# background dialog/bsddialog — that causes SIGTTOU suspend on exit (hang).
 INSTALLX_CHILD_PID=""
 INSTALLX_GAUGE_PID=""
 
@@ -92,7 +92,6 @@ installx_abort() {
 	INSTALLX_GAUGE_PID=""
 	installx_kill_pid "${INSTALLX_CHILD_PID:-}"
 	INSTALLX_CHILD_PID=""
-	# Stop any remaining children of this shell (pkg, etc.)
 	kill -TERM -$$ 2>/dev/null || true
 	trap - INT TERM HUP
 	exit 130
@@ -101,9 +100,10 @@ trap 'installx_abort INT' INT
 trap 'installx_abort TERM' TERM
 trap 'installx_abort HUP' HUP
 
-# Run a command in the background so Ctrl+C hits our trap (not only ncurses).
+# Run a long non-UI command in the background so Ctrl+C hits our trap.
 # Usage: installx_run_interruptible cmd [args...]
 # Sets $INSTALLX_RUN_RC to the child's exit status.
+# Never use this for dialog/bsddialog (ncurses must run in the foreground).
 installx_run_interruptible() {
 	"$@" &
 	INSTALLX_CHILD_PID=$!
@@ -183,7 +183,9 @@ installx_pkg_update_with_progress() {
 }
 
 # Wrapper: rest of script keeps calling dialog …
-# Runs the UI as a child so SIGINT is delivered to this shell's trap.
+# Must run in the FOREGROUND. Backgrounding ncurses causes SIGTTOU on
+# tcsetattr at exit, which suspends the process and makes wait hang forever.
+# dialog/bsddialog exit with >=128 (or similar) on interrupt — callers check that.
 dialog() {
 	if [ -z "$DIALOG_BIN" ] ; then
 		echo "error: dialog UI not available" >&2
@@ -193,7 +195,7 @@ dialog() {
 		TERM=xterm
 		export TERM
 	fi
-	installx_run_interruptible "$DIALOG_BIN" "$@"
+	"$DIALOG_BIN" "$@"
 	return $?
 }
 
@@ -393,12 +395,18 @@ fi
 
 add_user_to_video() {
 	# Your user needs to be in the video group to use video acceleration
-	default_user=`grep 1001 /etc/passwd | awk -F: '{ print $1 }'`
+	default_user=$(grep 1001 /etc/passwd | awk -F: '{ print $1 }')
 	if is_noninteractive ; then
 		VUSER="${INSTALLX_USER:-${default_user:-nick}}"
 		echo "noninteractive: using video user '$VUSER'" | tee -a "$LOGFILE"
 	else
-		VUSER=`dialog --title "Video User" --clear  --inputbox "What user should be added to the video group?" 0 0  $default_user --stdout`
+		# Quote default text — empty $default_user must not shift --stdout
+		VUSER=$(dialog --title "Video User" --clear --inputbox \
+			"What user should be added to the video group?" 0 0 "${default_user:-nick}" --stdout) || true
+		if [ -z "$VUSER" ] ; then
+			VUSER="${default_user:-nick}"
+			echo "installx: empty video user; using '$VUSER'" | tee -a "$LOGFILE"
+		fi
 	fi
 
 	# ensure home exists for .xinitrc and similar
@@ -409,9 +417,9 @@ add_user_to_video() {
 	mkdir -p "/home/$VUSER"
 	chown "$VUSER" "/home/$VUSER" 2>/dev/null || true
 
-	pw groupmod video -m $VUSER && echo "added $VUSER to group: video"
+	pw groupmod video -m "$VUSER" && echo "added $VUSER to group: video"
 	report "add $VUSER to video group" "$?"
-	pw groupmod wheel -m $VUSER && echo "added $VUSER to group: wheel" 
+	pw groupmod wheel -m "$VUSER" && echo "added $VUSER to group: wheel" 
 	report "add $VUSER to wheel group" "$?"
 
 	# probably not necessary, logging into an x session as root isn't recommended.
@@ -420,19 +428,17 @@ add_user_to_video() {
 }
 
 gen_xinit() {
-	# the following creates a .xinitrc file in the user's home directory that will launch
-	# the installed windowmanager as well as allow the slim display manager to pass it as
-	# an argument. 
-	if [ ! $1 ] ; then 
-		echo "argument needed by gen_xinit" 
-		return 0 
-	else
-		xinittxt="#!/bin/sh\n mywm="$1"\n if [ \$1 ] ; then\n \tcase \$1 in \n \t\tdefault) exec \$mywm ;;\n \t\t*) exec \$1 ;;\n \tesac\n else\n \texec \$mywm\n fi"
-		#echo -e $xinittxt > /home/$VUSER/.xinitrc && chown $VUSER:$VUSER /home/$VUSER/.xinitrc
-		echo -e $xinittxt > /home/$VUSER/.xinitrc && chown $VUSER /home/$VUSER/.xinitrc
-		test -d /etc/skel || mkdir /etc/skel
-		echo -e $xinittxt > /etc/skel/.xinitrc
+	# Create .xinitrc in the user's home and /etc/skel for the chosen WM/session.
+	if [ -z "$1" ] ; then
+		echo "argument needed by gen_xinit"
+		return 0
 	fi
+	# FreeBSD /bin/sh has no echo -e; use printf %b for \n escapes
+	xinittxt="#!/bin/sh\nmywm=\"$1\"\nif [ \"\$1\" ] ; then\n\tcase \$1 in\n\t\tdefault) exec \$mywm ;;\n\t\t*) exec \$1 ;;\n\tesac\nelse\n\texec \$mywm\nfi\n"
+	printf '%b' "$xinittxt" > "/home/${VUSER}/.xinitrc"
+	chown "$VUSER" "/home/${VUSER}/.xinitrc"
+	test -d /etc/skel || mkdir /etc/skel
+	printf '%b' "$xinittxt" > /etc/skel/.xinitrc
 }
 
 
