@@ -75,34 +75,15 @@ dialog() {
 	"$DIALOG_BIN" "$@"
 }
 
-# Attach stdin/stdout/stderr to the controlling terminal when needed.
-# VirtualBox consoles, sudo/doas, and some login paths leave fd 0/1/2 as
-# non-ttys even though /dev/tty works — strict [ -t 0 ] then false-negatives.
-ensure_controlling_tty() {
-	# Already fine
+# Best-effort: reattach stdio to the controlling terminal when fds are not
+# ttys (some VM consoles). Never hard-fail — user is often just root on console.
+attach_tty_best_effort() {
 	if [ -t 0 ] && [ -t 1 ] && [ -t 2 ] ; then
 		return 0
 	fi
-	# Prefer the process controlling terminal
 	if [ -c /dev/tty ] && [ -r /dev/tty ] && [ -w /dev/tty ] ; then
-		# Reopen stdio on the real console (common fix under VMs / sudo)
-		if exec </dev/tty >/dev/tty 2>/dev/tty ; then
-			return 0
-		fi
+		exec </dev/tty >/dev/tty 2>/dev/tty || true
 	fi
-	# FreeBSD virtual terminals e.g. /dev/ttyv0 when /dev/tty is odd
-	if [ -n "${TTY:-}" ] && [ -c "$TTY" ] ; then
-		if exec <"$TTY" >"$TTY" 2>"$TTY" ; then
-			return 0
-		fi
-	fi
-	_ctty=$(tty 2>/dev/null || true)
-	if [ -n "$_ctty" ] && [ "$_ctty" != "not a tty" ] && [ -c "$_ctty" ] ; then
-		if exec <"$_ctty" >"$_ctty" 2>"$_ctty" ; then
-			return 0
-		fi
-	fi
-	return 1
 }
 
 # dialog/bsddialog draw UI on stderr. Redirecting stderr to a file (as we do for
@@ -118,20 +99,13 @@ else
 	set +x
 	if ! resolve_dialog_bin ; then
 		echo "error: need a dialog UI for interactive install." >&2
-		echo "  FreeBSD base: bsddialog should be present (pkg which -o bsddialog / usr.bin)." >&2
+		echo "  FreeBSD base: bsddialog should be present." >&2
 		echo "  Or install:  pkg install misc/dialog" >&2
 		echo "  Or noninteractive: INSTALLX_NONINTERACTIVE=1 INSTALLX_DESKTOP=... $0" >&2
 		exit 1
 	fi
-	if ! ensure_controlling_tty ; then
-		echo "error: could not attach to a controlling terminal for interactive menus." >&2
-		echo "  tty(1)=$(tty 2>/dev/null || echo '?')  [ -t 0 ]=$([ -t 0 ] && echo yes || echo no)  [ -t 1 ]=$([ -t 1 ] && echo yes || echo no)  [ -t 2 ]=$([ -t 2 ] && echo yes || echo no)" >&2
-		echo "  Try from the console/login shell:  /bin/sh $0" >&2
-		echo "  Or under sudo:  sudo -t /bin/sh $0" >&2
-		echo "  Or automation:  INSTALLX_NONINTERACTIVE=1 INSTALLX_DESKTOP=... $0" >&2
-		exit 1
-	fi
-	echo "installx: interactive mode using ${DIALOG_BIN} on $(tty 2>/dev/null || echo tty). Log: $LOGFILE" | tee -a "$LOGFILE"
+	attach_tty_best_effort
+	echo "installx: interactive mode using ${DIALOG_BIN}. Log: $LOGFILE" | tee -a "$LOGFILE"
 fi
 
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
