@@ -14,6 +14,23 @@ fetch https://raw.githubusercontent.com/nicholasbernstein/install-fbsd-desktop/m
 ```
 ...or not. You're a grownup. Make your own decisions about how you want to do things.
 
+## FreeBSD port / package
+
+A ports skeleton lives under `ports/sysutils/install-fbsd-desktop/`
+(maintainer: Nicholas Bernstein <install-fbsd-desktop@nicholasbernstein.com>).
+
+On FreeBSD, from this checkout:
+
+```sh
+cd ports/sysutils/install-fbsd-desktop
+make package          # or: make install clean
+# then, if you built a package:
+pkg install ./work/pkg/install-fbsd-desktop-*.pkg
+```
+
+That installs `installx` (and symlink `install-fbsd-desktop`) to `${PREFIX}/sbin`.
+See `ports/README.md` for GitHub distfile builds and copying into `/usr/ports`.
+
 ## What gets installed
 
 One menu lists desktops and compositors together. You pick what you want;

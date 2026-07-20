@@ -1,0 +1,12 @@
+installx (package: install-fbsd-desktop) is an interactive shell script that
+installs and configures a FreeBSD graphical desktop or Wayland compositor.
+
+The user picks a single target from one menu (for example KDE, GNOME, Xfce,
+MATE, Cinnamon, LXQt, Sway, or Hyprland). The script applies a reasonable
+stack automatically: Xorg plus a display manager for X11 desktops, or
+Wayland/seatd/xwayland (and a ly greeter) for compositors.
+
+A non-interactive mode is available for automation and CI via environment
+variables (INSTALLX_NONINTERACTIVE, INSTALLX_DESKTOP, and related knobs).
+
+WWW: https://github.com/nicholasbernstein/install-fbsd-desktop

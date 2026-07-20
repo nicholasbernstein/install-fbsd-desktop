@@ -54,5 +54,5 @@ test_ipfw_firewall() {
 	assertContains ["firewall enabled"] "$(grep firewall_enable /etc/rc.conf)" 'YES'
 }
 
-###### shunit2 @ end of file
-. shunit2
+###### shunit2 @ end of file (same directory as this script when installed via the port)
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/shunit2"

@@ -1,0 +1,5 @@
+sbin/installx
+sbin/install-fbsd-desktop
+%%DATADIR%%/test_installx.sh
+%%DATADIR%%/shunit2
+%%PORTDOCS%%%%DOCSDIR%%/ReadMe.md
