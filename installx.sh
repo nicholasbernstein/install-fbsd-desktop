@@ -27,6 +27,9 @@ date > "$LOGFILE"
 #                          nvidia470 nvidia390 nvidia340 vesa scfb vmwgfx
 #   INSTALLX_BASH_SHELL    yes|no — set user shell to bash (default: yes if bash installed)
 #   INSTALLX_SUDO_WHEEL    yes|no — allow %wheel to sudo (default: yes if sudo installed)
+#   INSTALLX_AUDIO         yes|no — load sound drivers and probe/show devices (default: yes)
+#   INSTALLX_SND_DEFAULT_UNIT  pcm unit number for hw.snd.default_unit, or empty/skip to leave default
+#   INSTALLX_AUDIO_PKGS    yes|no — install pulseaudio + sndio helpers (default: yes if AUDIO=yes)
 #
 # Each desktop sets a small profile (SESSION_TYPE, packages, display manager). The user only
 # picks what they want; X11 vs Wayland plumbing is applied automatically.
@@ -826,6 +829,149 @@ if [ "$install_dv_drivers" -eq 0  ] ; then
 	echo "graphics: packages pending:${vc_pkgs:- (none)}" | tee -a "$LOGFILE"
 fi
 
+# ---------------------------------------------------------------------------
+# Audio: load drivers, probe /dev/sndstat, show devices, optional default unit
+# (probe-and-show — does not auto-pick a default without user/env choice)
+# ---------------------------------------------------------------------------
+audio_pkgs=""
+SNDSTAT_TEXT=""
+SND_DEFAULT_UNIT=""
+
+audio_loader_conf() {
+	_line="$1"
+	_key=$(echo "$_line" | cut -d= -f1)
+	if [ -n "$_key" ] && ! grep -q "^${_key}=" /boot/loader.conf 2>/dev/null ; then
+		echo "$_line" >> /boot/loader.conf
+		echo "audio: loader.conf += $_line" | tee -a "$LOGFILE"
+	fi
+}
+
+audio_load_drivers() {
+	# Meta-driver loads common sound modules (Foundation quick guide)
+	audio_loader_conf 'snd_driver_load="YES"'
+	# Also try to load now so probe works before reboot
+	if command -v kldload >/dev/null 2>&1 ; then
+		kldstat -q -n snd_driver 2>/dev/null || kldload snd_driver 2>/dev/null || true
+		kldstat -q -n snd_hda 2>/dev/null || kldload snd_hda 2>/dev/null || true
+	fi
+	# Brief settle time for pcm* attach
+	_i=0
+	while [ "$_i" -lt 5 ] ; do
+		if [ -r /dev/sndstat ] && grep -q 'pcm[0-9]' /dev/sndstat 2>/dev/null ; then
+			break
+		fi
+		_i=$((_i + 1))
+		sleep 1
+	done
+}
+
+audio_probe_sndstat() {
+	if [ -r /dev/sndstat ] ; then
+		SNDSTAT_TEXT=$(cat /dev/sndstat 2>/dev/null)
+	else
+		SNDSTAT_TEXT="(no /dev/sndstat — sound modules may need a reboot after install)"
+	fi
+	echo "audio: /dev/sndstat:" | tee -a "$LOGFILE"
+	echo "$SNDSTAT_TEXT" | tee -a "$LOGFILE"
+}
+
+# Build dialog menu items from pcm lines: unit + description
+audio_pcm_menu_args() {
+	# prints pairs: unit "description" for dialog --menu
+	echo "$SNDSTAT_TEXT" | awk '
+		/^pcm[0-9]+:/ {
+			unit=$1
+			sub(/^pcm/, "", unit)
+			sub(/:.*/, "", unit)
+			desc=$0
+			sub(/^pcm[0-9]+:[[:space:]]*/, "", desc)
+			gsub(/"/, "'\''", desc)
+			if (length(desc) > 60) desc=substr(desc,1,57) "..."
+			print unit
+			print desc
+		}
+	'
+}
+
+audio_set_default_unit() {
+	_u="$1"
+	case "$_u" in
+		""|skip|none|leave) return 0 ;;
+	esac
+	if ! echo "$_u" | grep -Eq '^[0-9]+$' ; then
+		echo "audio: invalid default unit '$_u' (ignored)" | tee -a "$LOGFILE"
+		return 1
+	fi
+	sysctl hw.snd.default_unit="$_u" 2>/dev/null || true
+	if grep -q '^hw\.snd\.default_unit=' /etc/sysctl.conf 2>/dev/null ; then
+		sed -i '' -e "s/^hw\\.snd\\.default_unit=.*/hw.snd.default_unit=${_u}/" /etc/sysctl.conf
+	else
+		echo "hw.snd.default_unit=${_u}" >> /etc/sysctl.conf
+	fi
+	echo "audio: hw.snd.default_unit=${_u} (sysctl + /etc/sysctl.conf)" | tee -a "$LOGFILE"
+	SND_DEFAULT_UNIT="$_u"
+}
+
+if is_noninteractive ; then
+	case "${INSTALLX_AUDIO:-yes}" in
+		[Nn][Oo]|0|false|FALSE) install_audio=1 ;;
+		*) install_audio=0 ;;
+	esac
+else
+	dialog --title "Audio" --yesno "Set up sound drivers and show detected audio devices?\n\n(Loads snd_driver, probes /dev/sndstat, lets you pick a default pcm unit — no automatic guess.)" 0 0
+	install_audio=$?
+fi
+
+if [ "$install_audio" -eq 0 ] ; then
+	audio_load_drivers
+	audio_probe_sndstat
+
+	if is_noninteractive ; then
+		# Log probe only; set default unit only if explicitly provided
+		if [ -n "${INSTALLX_SND_DEFAULT_UNIT:-}" ] ; then
+			audio_set_default_unit "$INSTALLX_SND_DEFAULT_UNIT"
+		else
+			echo "audio: noninteractive probe complete; default unit left unchanged (set INSTALLX_SND_DEFAULT_UNIT to override)" | tee -a "$LOGFILE"
+		fi
+		case "${INSTALLX_AUDIO_PKGS:-yes}" in
+			[Nn][Oo]|0|false|FALSE) ;;
+			*) audio_pkgs="pulseaudio sndio pavucontrol" ;;
+		esac
+	else
+		dialog --title "Audio devices (/dev/sndstat)" --msgbox "Detected sound devices:\n\n${SNDSTAT_TEXT}\n\nNext you may choose a default output unit, or leave the system default." 0 0
+
+		_menu_args=$(audio_pcm_menu_args)
+		if [ -n "$_menu_args" ] ; then
+			# shellcheck disable=SC2086
+			_choice=$(dialog --clear --title "Default audio device" \
+				--menu "Select hw.snd.default_unit (or leave unchanged).\nHDMI/DP devices are often listed before analog speakers." 0 0 0 \
+				leave "Leave current default unchanged" \
+				$_menu_args \
+				--stdout) || _choice="leave"
+			if [ "$_choice" != "leave" ] && [ -n "$_choice" ] ; then
+				audio_set_default_unit "$_choice"
+			else
+				echo "audio: left hw.snd.default_unit unchanged" | tee -a "$LOGFILE"
+			fi
+		else
+			dialog --title "Audio" --msgbox "No pcm devices found in /dev/sndstat yet.\n\n${SNDSTAT_TEXT}\n\nsnd_driver is set to load at boot; re-check after reboot with: cat /dev/sndstat" 0 0
+		fi
+
+		dialog --title "Audio packages" --yesno "Install common desktop audio packages?\n\n• pulseaudio — widely used by desktop apps\n• sndio — used by many FreeBSD ports (e.g. browsers)\n• pavucontrol — volume / device UI" 0 0
+		if [ $? -eq 0 ] ; then
+			audio_pkgs="pulseaudio sndio pavucontrol"
+		fi
+	fi
+
+	# Enable sndiod when sndio is requested
+	case " $audio_pkgs " in
+		*" sndio "*) sysrc sndiod_enable="YES" 2>/dev/null || true ;;
+	esac
+
+	echo "audio: packages pending:${audio_pkgs:- (none)}" | tee -a "$LOGFILE"
+	report "audio setup" 0
+fi
+
 # This is opt activities — must run before package list is finalized
 if is_noninteractive ; then
 	# Defaults chosen so existing shunit2 checks (fuse, ipfw, minimal footprint) pass in CI
@@ -890,7 +1036,7 @@ case "$DISPLAY_MGR" in
 esac
 
 # Final package list for install
-all_pkgs="$display_stack dbus $DESKTOP_PKGS $extra_pkgs $vc_pkgs $dm_pkgs $slim_extra_pkgs"
+all_pkgs="$display_stack dbus $DESKTOP_PKGS $extra_pkgs $vc_pkgs $dm_pkgs $slim_extra_pkgs $audio_pkgs"
 
 # check to see if we should set the user shell to bash
 # (moved after all_pkgs is known; previously referenced all_pkgs before it was set)
