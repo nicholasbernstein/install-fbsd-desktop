@@ -51,11 +51,14 @@ One workflow runs **everything** on every push, weekly schedule, PR, or manual
 dispatch (`.github/workflows/ci.yml`):
 
 1. **Lint** — shell/python syntax and FreeBSD release discovery script  
-2. **All desktop smokes** (in parallel) — each desktop × currently supported
+2. **Dialog UI smokes** — `scripts/test-dialog-ui.sh` (timeout widgets) and
+   `scripts/test-dialog-expect.exp` (welcome + Ctrl+C) on Linux `dialog` and
+   FreeBSD `bsddialog`  
+3. **All desktop smokes** (in parallel) — each desktop × currently supported
    FreeBSD releases ([security.freebsd.org](https://www.freebsd.org/security/#sup),
    via `scripts/freebsd-supported-releases.py`)  
-3. **Package build** (in parallel with smokes) — `.pkg`, `installx.sh`, ports tarball  
-4. **Release** — only if **all** of the above succeeded **and** `CONTENT_SHA256`
+4. **Package build** (in parallel with smokes) — `.pkg`, `installx.sh`, ports tarball  
+5. **Release** — only if **all** of the above succeeded **and** `CONTENT_SHA256`
    differs from the current `latest` release (otherwise skip publish)
 
 Desktops covered: awesome, WindowMaker, LXDE, LXQT, Xfce4, Sway, Hyprland,

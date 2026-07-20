@@ -32,7 +32,7 @@ jobs:
       - name: Shell / script syntax
         run: |
           set -euo pipefail
-          for f in installx.sh install.sh test_installx.sh scripts/build-freebsd-pkg.sh; do
+          for f in installx.sh install.sh test_installx.sh scripts/build-freebsd-pkg.sh scripts/test-dialog-ui.sh; do
             echo "==> bash -n $f"
             bash -n "$f"
           done
@@ -48,6 +48,64 @@ jobs:
           python3 scripts/freebsd-supported-releases.py --fallback-only --lines
           echo "==> pin"
           python3 scripts/freebsd-supported-releases.py --pin 14.4 --github-matrix
+
+  # -------------------------------------------------------------------------
+  # Dialog / bsddialog UI smoke (Linux dialog + FreeBSD bsddialog + expect)
+  # -------------------------------------------------------------------------
+  dialog-ui-linux:
+    name: Dialog UI (Linux)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dialog + expect
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dialog expect
+
+      - name: Timeout-based dialog widgets
+        run: |
+          export TERM=xterm
+          sh scripts/test-dialog-ui.sh
+
+      - name: Expect-drive installx welcome + Ctrl+C
+        run: |
+          set -euo pipefail
+          export TERM=xterm
+          # script(1) allocates a pseudo-TTY so ncurses/dialog can start
+          script -q -c "expect -f scripts/test-dialog-expect.exp" /dev/null
+
+  dialog-ui-freebsd:
+    name: Dialog UI (FreeBSD)
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bsddialog + expect on FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.4"
+          usesh: true
+          copyback: true
+          prepare: |
+            set -e
+            export ASSUME_ALWAYS_YES=yes
+            export IGNORE_OSVERSION=yes
+            pkg update -f
+            pkg install -y expect
+          run: |
+            set -e
+            set -x
+            cd "$GITHUB_WORKSPACE" 2>/dev/null || cd "$(pwd)"
+            export TERM=xterm
+            # Base system should provide bsddialog
+            which bsddialog || which dialog
+            sh scripts/test-dialog-ui.sh
+            # FreeBSD script(1): script -q /dev/null command
+            script -q /dev/null expect -f scripts/test-dialog-expect.exp
 
   # -------------------------------------------------------------------------
   # Desktop smokes — each reusable job expands across supported FreeBSD releases
@@ -210,6 +268,8 @@ jobs:
     name: Publish GitHub Release if content changed
     needs:
       - package
+      - dialog-ui-linux
+      - dialog-ui-freebsd
       - smoke-awesome
       - smoke-windowmaker
       - smoke-lxde

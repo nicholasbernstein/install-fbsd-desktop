@@ -1,0 +1,99 @@
+#!/usr/bin/env expect -f
+# Drive installx.sh interactive startup far enough to prove menus work,
+# then abort with Ctrl+C before package install.
+#
+# Usage (from repo root):
+#   expect scripts/test-dialog-expect.exp
+#
+# Requires: expect, dialog or bsddialog, a TTY (use script(1) wrapper in CI)
+
+set timeout 180
+set env(TERM) "xterm"
+# Force interactive path
+catch {unset env(CI)}
+catch {unset env(INSTALLX_NONINTERACTIVE)}
+set env(CI) ""
+set env(INSTALLX_NONINTERACTIVE) "0"
+
+set root [file dirname [file dirname [file normalize $argv0]]]
+cd $root
+
+puts "expect: spawning installx.sh from $root"
+# Use unbuffered-ish spawn; installx logs to installx.log as well
+spawn /bin/sh ./installx.sh
+
+# installx prints a line before/around the welcome dialog
+expect {
+	-re {interactive mode|installx:} {
+		puts "expect: saw installx console banner"
+	}
+	-re {Welcome|install-fbsd-desktop|guide you through} {
+		puts "expect: saw welcome text"
+	}
+	timeout {
+		puts "FAIL: timed out waiting for installx startup"
+		catch {exp_send "\x03"}
+		exit 1
+	}
+	eof {
+		puts "FAIL: installx exited before UI"
+		exit 1
+	}
+}
+
+# Enter to dismiss welcome (if still up)
+sleep 1
+send "\r"
+
+# After welcome we expect package catalog progress or next dialog
+expect {
+	-re {catalog|Updating|Package|gauge|Rolling|latest|quarterly|validating|Checking|Select Desktop|desktop} {
+		puts "expect: saw post-welcome activity"
+	}
+	-re {installx:} {
+		puts "expect: saw further installx output"
+	}
+	timeout {
+		puts "WARN: no clear post-welcome text (ncurses often hides it); sending Ctrl+C anyway"
+	}
+	eof {
+		puts "FAIL: process exited unexpectedly after welcome"
+		exit 1
+	}
+}
+
+# Abort the full installer before it goes too far
+puts "expect: sending Ctrl+C to abort"
+send "\x03"
+
+expect {
+	-re {Ctrl\+C|exiting|signal|caught} {
+		puts "expect: saw abort message"
+	}
+	eof {
+		puts "expect: process ended after Ctrl+C"
+	}
+	timeout {
+		puts "WARN: no abort message; killing spawn id"
+		catch {exec kill -9 [exp_pid]}
+	}
+}
+
+# Allow clean teardown
+set timeout 15
+expect {
+	eof { }
+	timeout { catch {exec kill -9 [exp_pid]} }
+}
+
+set code [wait]
+# wait returns a list: pid spawn_id os_error value
+# value 130 or non-zero from SIGINT is OK
+set status [lindex $code 3]
+puts "expect: child status=$status"
+if {$status == 0 || $status == 130 || $status == 1 || $status > 128} {
+	puts "PASS: expect dialog interaction smoke"
+	exit 0
+}
+puts "FAIL: unexpected exit status $status"
+exit 1
