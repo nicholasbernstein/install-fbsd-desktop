@@ -114,67 +114,51 @@ installx_run_interruptible() {
 }
 
 # Generic progress gauge while a background PID runs (pulsing bar).
-# $1=title $2=body text (may contain \n escapes) $3=pid to watch
-#
-# dialog/bsddialog gauge stdin protocol (see bsddialog(1) EXAMPLES):
-#   XXX
-#   <percent>
-#   <prompt lines…>
-#   XXX
-# Pipe must be line-buffered or updates sit in stdio until the child exits.
+# Strips newlines and sleeps 1 second to prevent the gauge from "freaking out"
+# (tearing or causing extreme screen redraw flicker).
 installx_gauge_while_pid() {
 	_gtitle="$1"
-	# Expand \n escapes to real newlines — printf %s leaves them literal
-	INSTALLX_GAUGE_TEXT=$(printf '%b' "$2")
-	INSTALLX_GAUGE_WATCH_PID="$3"
-	export INSTALLX_GAUGE_TEXT INSTALLX_GAUGE_WATCH_PID
-	if [ -z "${DIALOG_BIN:-}" ] || [ -z "${INSTALLX_GAUGE_WATCH_PID}" ] ; then
-		wait "${INSTALLX_GAUGE_WATCH_PID}" 2>/dev/null || true
-		unset INSTALLX_GAUGE_TEXT INSTALLX_GAUGE_WATCH_PID
+	# Flatten newlines to spaces to ensure bsddialog parser doesn't choke
+	_gtext=$(printf '%b' "$2" | tr '\n' ' ' | sed 's/  */ /g')
+	_gpid="$3"
+
+	if [ -z "${DIALOG_BIN:-}" ] || [ -z "${_gpid}" ] ; then
+		wait "${_gpid}" 2>/dev/null || true
 		return 0
 	fi
 	if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ] || [ "$TERM" = "unknown" ] ; then
 		TERM=xterm
 		export TERM
 	fi
-	# Feeder → gauge in foreground (no FIFO deadlock). stdbuf -oL so each
-	# frame is flushed; without it, pipe buffering freezes the bar at 0%.
-	# INSTALLX_CHILD_PID stays the real work PID for Ctrl+C.
-	if command -v stdbuf >/dev/null 2>&1 ; then
-		stdbuf -oL sh -c '
-			printf "XXX\n%d\n%s\nXXX\n" 1 "$INSTALLX_GAUGE_TEXT"
-			_pct=4
-			while kill -0 "$INSTALLX_GAUGE_WATCH_PID" 2>/dev/null ; do
-				printf "XXX\n%d\n%s\nXXX\n" "$_pct" "$INSTALLX_GAUGE_TEXT"
-				_pct=$((_pct + 3))
-				if [ "$_pct" -ge 95 ] ; then _pct=5 ; fi
-				sleep 0.3 2>/dev/null || sleep 1
-			done
-			printf "XXX\n%d\n%s\nXXX\n" 100 "Finishing…"
-		' | "$DIALOG_BIN" --title "installx" --gauge "${_gtitle}" 12 60 0
-	else
-		# Fallback: awk fflush after every frame (no stdbuf)
-		awk 'BEGIN {
-			gtext = ENVIRON["INSTALLX_GAUGE_TEXT"]
-			gpid = ENVIRON["INSTALLX_GAUGE_WATCH_PID"]
-			printf "XXX\n%d\n%s\nXXX\n", 1, gtext; fflush()
-			pct = 4
-			while (system("kill -0 " gpid " 2>/dev/null") == 0) {
-				printf "XXX\n%d\n%s\nXXX\n", pct, gtext; fflush()
-				pct += 3
-				if (pct >= 95) pct = 5
-				system("sleep 0.3 2>/dev/null || sleep 1")
-			}
-			printf "XXX\n%d\n%s\nXXX\n", 100, "Finishing…"; fflush()
-		}' | "$DIALOG_BIN" --title "installx" --gauge "${_gtitle}" 12 60 0
-	fi
-	unset INSTALLX_GAUGE_TEXT INSTALLX_GAUGE_WATCH_PID
+
+	# A clean subshell with simple echo guarantees output lines flush correctly
+	# without needing stdbuf or awk workarounds.
+	(
+		echo "XXX"
+		echo "1"
+		echo "${_gtext}"
+		echo "XXX"
+		_pct=5
+		while kill -0 "${_gpid}" 2>/dev/null ; do
+			echo "XXX"
+			echo "$_pct"
+			echo "${_gtext}"
+			echo "XXX"
+			_pct=$((_pct + 5))
+			if [ "$_pct" -gt 95 ] ; then _pct=5 ; fi
+			sleep 1
+		done
+		echo "XXX"
+		echo "100"
+		echo "Finishing…"
+		echo "XXX"
+	) | "$DIALOG_BIN" --title "installx" --gauge "${_gtitle}" 8 60 0
 }
 
 # pkg update with an interactive gauge. Sets INSTALLX_RUN_RC.
 installx_pkg_update_with_progress() {
 	_gauge_title="${1:-Updating package catalog}"
-	_gauge_text="${2:-Updating the package catalog…\n\nPlease wait.\nCtrl+C aborts.}"
+	_gauge_text="${2:-Updating the package catalog… Please wait. Ctrl+C aborts.}"
 
 	# Log always; avoid printing to the console right before a gauge (it
 	# corrupts the TUI transition from welcome → progress).
@@ -222,10 +206,13 @@ dialog() {
 		export TERM
 	fi
 
-	# Force interactive dialogs to read from the terminal.
-	# This prevents skipping/flashing if the script is run via a pipe (curl | sh)
-	# or if standard input gets flooded with pasted newlines.
-	if [ -c /dev/tty ] ; then
+	# Force terminal sane mode to prevent flashing if a previous command broke the TTY
+	stty sane 2>/dev/null || true
+
+	# Read from the terminal explicitly to prevent UI skip loops
+	if [ -t 0 ] ; then
+		"$DIALOG_BIN" "$@"
+	elif [ -c /dev/tty ] ; then
 		"$DIALOG_BIN" "$@" < /dev/tty
 	else
 		"$DIALOG_BIN" "$@"
@@ -242,6 +229,12 @@ if is_noninteractive ; then
 	PS4="$0 $LINENO >"
 else
 	set +x
+	# Global safety net: Reconnect stdin to the keyboard for the whole script
+	# This guarantees the Welcome screen cannot be skipped by an accidental pipe.
+	if [ ! -t 0 ] && [ -c /dev/tty ] ; then
+		exec < /dev/tty
+	fi
+	
 	# Ctrl+C = INTR on this tty
 	stty isig 2>/dev/null || true
 	stty intr '^C' 2>/dev/null || true
@@ -427,7 +420,7 @@ You can cancel a screen with Esc, quit from the desktop menu, or press Ctrl+C to
 	fi
 fi
 # Progress UI starts right after OK (no silent work before the gauge)
-installx_pkg_update_with_progress "Package catalog" "Updating the package catalog…\n\nPlease wait.\nCtrl+C aborts."
+installx_pkg_update_with_progress "Package catalog" "Updating the package catalog… Please wait. Ctrl+C aborts."
 report "pkg bootstrapping" "$INSTALLX_RUN_RC"
 if ! is_noninteractive ; then
 	echo "installx: package catalog ready; continuing…" >> "$LOGFILE"
@@ -716,7 +709,7 @@ fi
 if [ "$rolling" -eq 0  ] ; then 
 	change_pkg_url_to_latest
 	report "quarterly->latest changed" "$?"
-	installx_pkg_update_with_progress "Package catalog (latest)" "Refreshing the package catalog…\n\nPlease wait.\nCtrl+C aborts."
+	installx_pkg_update_with_progress "Package catalog (latest)" "Refreshing the package catalog… Please wait. Ctrl+C aborts."
 else
 	echo "pkg: staying on quarterly package set" | tee -a "$LOGFILE"
 fi
@@ -850,7 +843,7 @@ mkdir -p "${_val_dir}"
 INSTALLX_CHILD_PID=$!
 if ! is_noninteractive && [ -n "${DIALOG_BIN:-}" ] ; then
 	installx_gauge_while_pid "Checking desktops" \
-		"Checking which desktops can be installed…\n\nQuerying the package catalog.\nCtrl+C aborts." \
+		"Checking which desktops can be installed… Querying the package catalog. Ctrl+C aborts." \
 		"${INSTALLX_CHILD_PID}"
 else
 	wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
