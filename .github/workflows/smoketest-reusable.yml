@@ -140,19 +140,28 @@ jobs:
             export INSTALLX_SUDO_WHEEL=yes
 
             echo "==== installx.sh desktop=$INSTALLX_DESKTOP release=${{ matrix.release }} ===="
-            if ! sh ./installx.sh; then
-              echo "installx.sh failed; dumping logs" >&2
-              tail -n 200 installx.log 2>/dev/null || true
-              tail -n 200 installx.err 2>/dev/null || true
-              exit 1
+            set +e
+            sh ./installx.sh
+            install_rc=$?
+            set -e
+            echo "==== installx.log (tail) ===="
+            tail -n 150 installx.log 2>/dev/null || echo "(no installx.log)"
+            echo "==== installx.err (tail) ===="
+            tail -n 150 installx.err 2>/dev/null || echo "(no installx.err)"
+            if [ "$install_rc" -ne 0 ]; then
+              echo "installx.sh failed with status $install_rc" >&2
+              echo "---- last pkg-related log lines ----"
+              grep -iE 'pkg |package|No packages|not found|FATAL|error' installx.log installx.err 2>/dev/null | tail -n 50 || true
+              exit "$install_rc"
             fi
 
-            echo "==== installx.log (tail) ===="
-            tail -n 100 installx.log || true
-
             echo "==== shunit2 post-install tests ===="
-            if ! sh ./test_installx.sh; then
-              echo "shunit2 tests failed" >&2
+            set +e
+            sh ./test_installx.sh
+            test_rc=$?
+            set -e
+            if [ "$test_rc" -ne 0 ]; then
+              echo "shunit2 tests failed with status $test_rc" >&2
               echo "---- /etc/rc.conf ----"
               cat /etc/rc.conf || true
               echo "---- /boot/loader.conf ----"
@@ -161,7 +170,7 @@ jobs:
               cat /etc/fstab || true
               echo "---- groups ----"
               grep -E 'video|wheel' /etc/group || true
-              exit 1
+              exit "$test_rc"
             fi
 
             echo "==== Smoketest passed: ${{ inputs.desktop }} on FreeBSD ${{ matrix.release }} ===="

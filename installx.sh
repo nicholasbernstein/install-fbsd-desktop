@@ -412,8 +412,10 @@ desktop_key=$(echo "$desktop" | tr '[:upper:]' '[:lower:]')
 
 case $desktop_key in
   kde)
-      gen_xinit "startkde"
-      DESKTOP_PKGS="kde5 plasma5-plasma plasma5-plasma-disks plasma5-plasma-systemmonitor kde-baseapps"
+      # FreeBSD handbook: pkg install kde (Plasma 6 meta); X11 session is startplasma-x11
+      # (kde5/plasma5-* packages were removed — they break pkg install on 14/15)
+      gen_xinit "startplasma-x11"
+      DESKTOP_PKGS="kde"
       DISPLAY_MGR="sddm"
       ;;
   windowmaker)
