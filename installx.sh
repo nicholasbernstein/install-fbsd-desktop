@@ -221,7 +221,15 @@ dialog() {
 		TERM=xterm
 		export TERM
 	fi
-	"$DIALOG_BIN" "$@"
+
+	# Force interactive dialogs to read from the terminal.
+	# This prevents skipping/flashing if the script is run via a pipe (curl | sh)
+	# or if standard input gets flooded with pasted newlines.
+	if [ -c /dev/tty ] ; then
+		"$DIALOG_BIN" "$@" < /dev/tty
+	else
+		"$DIALOG_BIN" "$@"
+	fi
 	return $?
 }
 
@@ -1071,8 +1079,8 @@ echo "Extra packages:" "$extra_pkgs" | tee -a "$LOGFILE"
 
 # by default install the full xorg, but if xorg_minimal is set, override it
 
-echo $extra_pkgs | grep -q linux_base-c7 && linuxBaseC7
-echo $extra_pkgs | grep -q virtualbox-ose-additions && enable_virtualbox_ose_additions
+echo "$extra_pkgs" | grep -q linux_base-c7 && linuxBaseC7
+echo "$extra_pkgs" | grep -q virtualbox-ose-additions && enable_virtualbox_ose_additions
 
 # ---------------------------------------------------------------------------
 # Graphics drivers (FreeBSD handbook §X11 / graphics drivers)
@@ -1563,23 +1571,22 @@ xorg_pkgs="xorg"
 # Wayland stack: compositor packages come from DESKTOP_PKGS; this is shared plumbing
 wayland_base_pkgs="wayland seatd xwayland"
 
-echo $opt_activities | grep -q load_card_readers && load_card_readers
-echo $opt_activities | grep -q load_atapi && load_card_readers
-echo $opt_activities | grep -q load_fuse && load_fuse
-echo $opt_activities | grep -q load_coretemp && load_card_readers
-echo $opt_activities | grep -q load_amdtemp && load_card_readers
-echo $opt_activities | grep -q load_bluetooth && load_card_readers
-echo $opt_activities | grep -q enable_ipfw_firewall && enable_ipfw_firewall
-echo $opt_activities | grep -q enable_tmpfs && enable_tmpfs
-echo $opt_activities | grep -q enable_async_io && enable_async_io
-echo $opt_activities | grep -q enable_workstation_pwr_mgmnt && enable_workstation_pwr_mgmnt
-echo $opt_activities | grep -q load_bluetooth && load_bluetooth
-echo $opt_activities | grep -q enable_cups && enable_cups
-echo $opt_activities | grep -q enable_webcam && enable_webcam
+echo "$opt_activities" | grep -q load_card_readers && load_card_readers
+echo "$opt_activities" | grep -q load_atapi && load_atapi
+echo "$opt_activities" | grep -q load_fuse && load_fuse
+echo "$opt_activities" | grep -q load_coretemp && load_coretemp
+echo "$opt_activities" | grep -q load_amdtemp && load_amdtemp
+echo "$opt_activities" | grep -q load_bluetooth && load_bluetooth
+echo "$opt_activities" | grep -q enable_ipfw_firewall && enable_ipfw_firewall
+echo "$opt_activities" | grep -q enable_tmpfs && enable_tmpfs
+echo "$opt_activities" | grep -q enable_async_io && enable_async_io
+echo "$opt_activities" | grep -q enable_workstation_pwr_mgmnt && enable_workstation_pwr_mgmnt
+echo "$opt_activities" | grep -q enable_cups && enable_cups
+echo "$opt_activities" | grep -q enable_webcam && enable_webcam
 
 # Display stack: full/minimal Xorg for X11 sessions; wayland+seatd+xwayland for compositors
 if [ "$NEED_XORG" = "yes" ] ; then
-	echo $opt_activities | grep -q minimal_xorg && xorg_pkgs=$xorg_minimal
+	echo "$opt_activities" | grep -q minimal_xorg && xorg_pkgs=$xorg_minimal
 	display_stack="$xorg_pkgs"
 else
 	display_stack="$wayland_base_pkgs"
@@ -1727,4 +1734,3 @@ if is_noninteractive ; then
 else
 	dialog --msgbox "$welcome Hopefully that worked. You'll probably want to reboot at this point. Please report any problems to http://bug.freebsddesktop.xyz/ or see the installx.log file created" 0 0
 fi
-
