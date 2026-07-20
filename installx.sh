@@ -21,7 +21,8 @@ date > "$LOGFILE"
 #   INSTALLX_EXTRA_PKGS    space-separated packages (default: bash sudo)
 #   INSTALLX_OPT           space-separated option names matching the dialog checklist (see below)
 #   INSTALLX_GRAPHICS      yes|no — try to install GPU drivers (default: no)
-#   INSTALLX_VIDEO_CARD    i915kms|radeonkms|amdgpu|nvidia|vesa|scfb (if GRAPHICS=yes)
+#   INSTALLX_VIDEO_CARD    space-separated: i915kms radeonkms amdgpu nvidia nvidia_modeset
+#                          vesa scfb vmwgfx (if GRAPHICS=yes). Matches FreeBSD handbook names.
 #   INSTALLX_BASH_SHELL    yes|no — set user shell to bash (default: yes if bash installed)
 #   INSTALLX_SUDO_WHEEL    yes|no — allow %wheel to sudo (default: yes if sudo installed)
 #
@@ -511,9 +512,126 @@ echo "Extra packages:" "$extra_pkgs" | tee -a "$LOGFILE"
 echo $extra_pkgs | grep -q linux_base-c7 && linuxBaseC7
 echo $extra_pkgs | grep -q virtualbox-ose-additions && enable_virtualbox_ose_additions
 
-# Honestly, shouldn't graphic card configuration be done in the base installer? 
-# Even if X isn't enabled, the right drivers should be selected and installed.
-# Lets handle the 4 major cases, and hope for the best
+# ---------------------------------------------------------------------------
+# Graphics drivers (FreeBSD handbook §X11 / graphics drivers)
+#
+# drm-kmod is a metaport: pkg resolves the correct drm-NN-kmod build for the
+# running FreeBSD major version (14.x vs 15.x). Module names below match the
+# handbook (short kld names, not full /boot/modules paths).
+#
+# NVIDIA on FreeBSD 14/15: prefer nvidia-drm-kmod + nvidia-drm + modeset sysctl
+# for KMS/PRIME/Wayland; nvidia_modeset keeps the older modeset-only stack.
+#
+# X11-only DDX packages (xf86-video-*) are skipped for Wayland sessions.
+# Post-install steps (e.g. nvidia-xconfig) run after pkg install.
+# dialog --checklist may return multiple selections; we process each token.
+# ---------------------------------------------------------------------------
+vc_pkgs=""
+vc_post_nvidia_xconfig=0
+vc_selected=""
+
+graphics_append_pkg() {
+	# $1... packages to add to vc_pkgs if not already present
+	for _p in "$@" ; do
+		case " ${vc_pkgs} " in
+			*" ${_p} "*) ;;
+			*) vc_pkgs="${vc_pkgs} ${_p}" ;;
+		esac
+	done
+	vc_pkgs=$(echo "$vc_pkgs" | sed 's/^ *//')
+}
+
+graphics_enable_kld() {
+	# handbook style: sysrc kld_list+=modulename
+	sysrc kld_list+="$1"
+	echo "graphics: kld_list+=$1" | tee -a "$LOGFILE"
+}
+
+graphics_loader_conf() {
+	# $1 = key=value for /boot/loader.conf (idempotent)
+	_line="$1"
+	_key=$(echo "$_line" | cut -d= -f1)
+	if [ -n "$_key" ] && ! grep -q "^${_key}=" /boot/loader.conf 2>/dev/null ; then
+		echo "$_line" >> /boot/loader.conf
+		echo "graphics: loader.conf += $_line" | tee -a "$LOGFILE"
+	fi
+}
+
+# Apply one GPU selection (handbook-aligned)
+graphics_select() {
+	_gpu="$1"
+	case "$_gpu" in
+		i915kms)
+			# Intel: drm-kmod → i915kms
+			graphics_append_pkg drm-kmod
+			graphics_enable_kld i915kms
+			;;
+		amdgpu)
+			# Modern AMD (HD7000/Tahiti and newer)
+			graphics_append_pkg drm-kmod
+			if [ "$NEED_XORG" = "yes" ] ; then
+				graphics_append_pkg xf86-video-amdgpu
+			fi
+			graphics_enable_kld amdgpu
+			;;
+		radeonkms)
+			# Older AMD (pre-HD7000)
+			graphics_append_pkg drm-kmod
+			if [ "$NEED_XORG" = "yes" ] ; then
+				graphics_append_pkg xf86-video-ati
+			fi
+			graphics_enable_kld radeonkms
+			;;
+		nvidia)
+			# Current handbook default: nvidia-drm-kmod + nvidia-drm + modeset
+			# Works for X11 and Wayland/PRIME on FreeBSD 14+
+			graphics_append_pkg nvidia-drm-kmod
+			if [ "$NEED_XORG" = "yes" ] ; then
+				graphics_append_pkg nvidia-settings nvidia-xconfig
+				vc_post_nvidia_xconfig=1
+			fi
+			graphics_enable_kld nvidia-drm
+			graphics_loader_conf 'hw.nvidiadrm.modeset="1"'
+			;;
+		nvidia_modeset)
+			# Older stack without DRM KMS (pre-nvidia-drm path)
+			graphics_append_pkg nvidia-driver
+			if [ "$NEED_XORG" = "yes" ] ; then
+				graphics_append_pkg nvidia-settings nvidia-xconfig
+				vc_post_nvidia_xconfig=1
+			fi
+			graphics_enable_kld nvidia-modeset
+			;;
+		vesa)
+			# BIOS / CSM fallback — X11 only
+			if [ "$NEED_XORG" = "yes" ] ; then
+				graphics_append_pkg xf86-video-vesa
+			else
+				echo "graphics: vesa skipped (X11-only; session is Wayland)" | tee -a "$LOGFILE"
+			fi
+			;;
+		scfb)
+			# UEFI framebuffer — X11 driver package; module often in base
+			if [ "$NEED_XORG" = "yes" ] ; then
+				graphics_append_pkg xf86-video-scfb
+			else
+				echo "graphics: scfb X11 driver skipped (Wayland); console scfb still available" | tee -a "$LOGFILE"
+			fi
+			;;
+		vmwgfx)
+			# VMware SVGA
+			if [ "$NEED_XORG" = "yes" ] ; then
+				graphics_append_pkg xf86-video-vmware
+			fi
+			graphics_enable_kld vmwgfx
+			;;
+		other|"")
+			;;
+		*)
+			echo "graphics: unknown selection '$_gpu' (ignored)" | tee -a "$LOGFILE"
+			;;
+	esac
+}
 
 if is_noninteractive ; then
 	case "${INSTALLX_GRAPHICS:-no}" in
@@ -521,7 +639,7 @@ if is_noninteractive ; then
 		*) install_dv_drivers=1 ;;
 	esac
 else
-	dialog --title "Graphics Drivers" --yesno "Would you like to try to install the drivers for your video card?\n\nPlease refer to freebsd handbook for more details:\nhttps://www.freebsd.org/doc/handbook/x-config.html" 0 0
+	dialog --title "Graphics Drivers" --yesno "Would you like to try to install the drivers for your video card?\n\nSelections follow the FreeBSD handbook (drm-kmod / nvidia-drm-kmod).\nSee: https://www.freebsd.org/doc/handbook/x-config.html" 0 0
 	install_dv_drivers=$?
 fi
 
@@ -530,52 +648,54 @@ if [ "$install_dv_drivers" -eq 0  ] ; then
 	if is_noninteractive ; then
 		card="${INSTALLX_VIDEO_CARD:-}"
 	else
-		card=$(dialog --checklist "Select additional packages to install:" 0 0 0 \
-		i915kms "most Intel graphics cards" off \
-		radeonkms "most OLDER Radeon graphics cards" off \
-		amdgpu "most NEWER AMD graphics cards" off \
-		nvidia "NVidia Graphics Cards" off \
-		vesa 	"Generic driver that may work as a fallback" off \
-		scfb 	"Another Generic diver for UEFI and ARM" off \
-		other "Anything but the above" off \
+		# Show pciconf hint in the menu title when possible
+		_pcihint=$(pciconf -lv 2>/dev/null | grep -B3 display | head -n 6 | tr '\n' ' ')
+		card=$(dialog --checklist "Select GPU driver(s) to install (multi-select OK).\n${_pcihint}" 0 0 0 \
+		i915kms "Intel (drm-kmod → i915kms)" off \
+		amdgpu "AMD modern / GCN+ (drm-kmod → amdgpu)" off \
+		radeonkms "AMD legacy pre-HD7000 (drm-kmod → radeonkms)" off \
+		nvidia "NVIDIA current (nvidia-drm-kmod, KMS/Wayland)" off \
+		nvidia_modeset "NVIDIA modeset-only (no nvidia-drm)" off \
+		scfb "UEFI framebuffer (X11; prefer if unknown GPU + UEFI)" off \
+		vesa "VESA BIOS fallback (X11; BIOS/CSM boot)" off \
+		vmwgfx "VMware SVGA" off \
+		other "None of the above / show pciconf only" off \
 		--stdout)
 	fi
 
-	case $card in
-		i915kms) 
-			vc_pkgs="drm-kmod"
-			sysrc kld_list+="/boot/modules/i915kms.ko"
-			;;
-		radeonkms) 
-			vc_pkgs="drm-kmod xf86-video-ati"
-			sysrc kld_list+="/boot/modules/radeonkms.ko"
-			;;
-		amdgpu) 
-			vc_pkgs="drm-kmod xf86-video-amdgpu"
-			sysrc kld_list+="amdgpu"
-			;;
-		nvidia) 
-			vc_pkgs="nvidia-driver nvidia-xconfig nvidia-settings"
-			nvidia-xconfig
-			sysrc kld_list+="nvidia-modeset nvidia"
-			;;
-		vesa)
-			vc_pkgs="xf86-video-vesa"
-			;;
-		scfb)
-			vc_pkgs="xf86-video-scfb"
-			;;
-		*)
-			pciconf=$(pciconf -vl | grep -B3 display)
-			if ! is_noninteractive ; then
-				dialog --msgbox "You'll need to check the FreeBSD handbook or forums. The following output may be helpful in finding a driber: pciconf -vl | grep -B3 display: $pciconf" 0 0
-			else
-				echo "noninteractive: no known video card selected; pciconf: $pciconf" | tee -a "$LOGFILE"
-			fi
-			;;
-	esac
+	# Normalize dialog checklist output (may be quoted / multi-value)
+	card=$(echo "$card" | tr -d '"' | tr ',' ' ')
+	vc_selected="$card"
+	echo "graphics: selected [$card] session=$SESSION_TYPE FreeBSD=$(uname -r)" | tee -a "$LOGFILE"
 
-fi 
+	_any=0
+	for _gpu in $card ; do
+		[ -z "$_gpu" ] && continue
+		if [ "$_gpu" = "other" ] ; then
+			_any=1
+			continue
+		fi
+		graphics_select "$_gpu"
+		_any=1
+	done
+
+	if [ "$_any" -eq 0 ] || echo " $card " | grep -q " other " ; then
+		pciconf_out=$(pciconf -lv 2>/dev/null | grep -B3 display)
+		echo "graphics: pciconf display devices:" | tee -a "$LOGFILE"
+		echo "$pciconf_out" | tee -a "$LOGFILE"
+		if ! is_noninteractive ; then
+			dialog --msgbox "No specific driver applied (or 'other' selected).\n\npciconf -lv | grep -B3 display:\n\n${pciconf_out}\n\nSee the FreeBSD handbook graphics drivers section." 0 0
+		fi
+	fi
+
+	# Optional firmware helper (FreeBSD base on recent releases)
+	if command -v fwget >/dev/null 2>&1 ; then
+		echo "graphics: running fwget to fetch device firmware (if any)" | tee -a "$LOGFILE"
+		fwget 2>/dev/null || true
+	fi
+
+	echo "graphics: packages pending:${vc_pkgs:- (none)}" | tee -a "$LOGFILE"
+fi
 
 # This is opt activities — must run before package list is finalized
 if is_noninteractive ; then
@@ -683,6 +803,16 @@ fi
 if [ "$DISPLAY_MGR" = "slim" ] ; then
 	sed -i '' -E 's/^current_theme.+$/current_theme		slim-freebsd-dark-theme/' /usr/local/etc/slim.conf
 	report "slim.conf dark theme" "$?"
+fi
+
+# Graphics post-install (must run after packages exist)
+if [ "${vc_post_nvidia_xconfig:-0}" -eq 1 ] && [ "$NEED_XORG" = "yes" ] ; then
+	if command -v nvidia-xconfig >/dev/null 2>&1 ; then
+		nvidia-xconfig 2>/dev/null || echo "nvidia-xconfig failed (non-fatal)" | tee -a "$LOGFILE"
+		report "nvidia-xconfig" "$?"
+	else
+		echo "graphics: nvidia-xconfig not installed; skip" | tee -a "$LOGFILE"
+	fi
 fi
 
 # Wayland: seatd, compositor config, optional ly greeter, start helper
