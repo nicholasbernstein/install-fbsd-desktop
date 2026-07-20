@@ -384,27 +384,180 @@ fi
 if [ "$rolling" -eq 0  ] ; then 
 	change_pkg_url_to_latest
 	report "quarterly->latest changed" "$?"
+	# Catalog must match the repo we will install from
+	pkg update | tee -a "$LOGFILE"
 fi
 
+# ---------------------------------------------------------------------------
+# Package catalog validation
+#
+# Before offering choices (or installing), verify names exist in the pkg
+# cache/catalog. Unavailable desktops are removed from the menu; optional
+# packages are dropped with a warning. CI/noninteractive fails hard if the
+# selected desktop's required packages are missing.
+# ---------------------------------------------------------------------------
+pkg_is_available() {
+	_pn="$1"
+	[ -z "$_pn" ] && return 1
+	# Already installed
+	if pkg info -e "$_pn" >/dev/null 2>&1 ; then
+		return 0
+	fi
+	# Exact name in remote catalogs (after pkg update)
+	if pkg rquery -e "%n == \"${_pn}\"" %n >/dev/null 2>&1 ; then
+		_hit=$(pkg rquery -e "%n == \"${_pn}\"" %n 2>/dev/null | head -n 1)
+		[ -n "$_hit" ] && return 0
+	fi
+	# Fallback: exact search
+	if pkg search -q -e "$_pn" 2>/dev/null | grep -qx "$_pn" ; then
+		return 0
+	fi
+	return 1
+}
+
+# Sets MISSING_PKGS to those not in the catalog; returns 0 if all present
+pkgs_find_missing() {
+	MISSING_PKGS=""
+	for _pn in "$@" ; do
+		[ -z "$_pn" ] && continue
+		if ! pkg_is_available "$_pn" ; then
+			MISSING_PKGS="${MISSING_PKGS} ${_pn}"
+		fi
+	done
+	MISSING_PKGS=$(echo "$MISSING_PKGS" | sed 's/^ *//')
+	[ -z "$MISSING_PKGS" ]
+}
+
+# Echo only packages that exist in the catalog on stdout; log skips to log/stderr only
+pkgs_filter_available() {
+	_kept=""
+	_drop=""
+	for _pn in "$@" ; do
+		[ -z "$_pn" ] && continue
+		if pkg_is_available "$_pn" ; then
+			_kept="${_kept} ${_pn}"
+		else
+			_drop="${_drop} ${_pn}"
+			echo "pkg: not in catalog, removing from selection: ${_pn}" >> "$LOGFILE"
+			echo "pkg: not in catalog, removing from selection: ${_pn}" >&2
+		fi
+	done
+	if [ -n "$_drop" ] ; then
+		echo "pkg: removed unavailable packages:${_drop}" >> "$LOGFILE"
+		echo "pkg: removed unavailable packages:${_drop}" >&2
+	fi
+	# stdout = clean package list only (safe for command substitution)
+	echo "$_kept" | sed 's/^ *//'
+}
+
+# Required packages to offer a desktop (includes login manager / wayland plumbing)
+desktop_required_pkgs() {
+	case $(echo "$1" | tr '[:upper:]' '[:lower:]') in
+		kde) echo "kde sddm dbus xorg" ;;
+		gnome) echo "gnome gdm dbus" ;;
+		xfce4|xfce) echo "xfce sddm dbus xorg" ;;
+		mate) echo "mate sddm dbus xorg" ;;
+		cinnamon) echo "cinnamon sddm dbus xorg" ;;
+		lxqt) echo "lxqt sddm dbus xorg" ;;
+		lxde) echo "lxde-meta lxde-common sddm dbus xorg" ;;
+		windowmaker) echo "windowmaker wmakerconf sddm dbus xorg" ;;
+		awesome) echo "awesome sddm dbus xorg" ;;
+		sway) echo "sway swayidle swaylock-effects alacritty waybar wayland seatd xwayland ly dbus" ;;
+		hyprland) echo "hyprland alacritty wayland seatd xwayland ly dbus" ;;
+		*) echo "" ;;
+	esac
+}
+
+desktop_menu_label() {
+	case $(echo "$1" | tr '[:upper:]' '[:lower:]') in
+		kde) echo "KDE Plasma 6 (X11)" ;;
+		gnome) echo "GNOME desktop (X11)" ;;
+		xfce4) echo "Lightweight XFCE desktop (X11)" ;;
+		mate) echo "MATE desktop, GNOME 2 fork (X11)" ;;
+		cinnamon) echo "Cinnamon desktop (X11)" ;;
+		lxqt) echo "Lightweight Qt desktop (X11)" ;;
+		lxde) echo "Lightweight X11 desktop (X11)" ;;
+		windowmaker) echo "Window Maker (X11)" ;;
+		awesome) echo "Awesome tiling WM (X11)" ;;
+		sway) echo "Sway tiling compositor (Wayland)" ;;
+		hyprland) echo "Hyprland compositor (Wayland)" ;;
+		*) echo "$1" ;;
+	esac
+}
+
+# Canonical menu tags (display order)
+ALL_DESKTOP_TAGS="KDE GNOME Xfce4 MATE Cinnamon LXQT LXDE WindowMaker awesome Sway Hyprland"
+
+AVAILABLE_DESKTOPS=""
+UNAVAILABLE_DESKTOPS=""
+UNAVAILABLE_DESKTOP_DETAIL=""
+
+echo "pkg: validating desktop options against package catalog…" | tee -a "$LOGFILE"
+for _tag in $ALL_DESKTOP_TAGS ; do
+	_req=$(desktop_required_pkgs "$_tag")
+	if pkgs_find_missing $_req ; then
+		AVAILABLE_DESKTOPS="${AVAILABLE_DESKTOPS} ${_tag}"
+	else
+		UNAVAILABLE_DESKTOPS="${UNAVAILABLE_DESKTOPS} ${_tag}"
+		UNAVAILABLE_DESKTOP_DETAIL="${UNAVAILABLE_DESKTOP_DETAIL}\n  ${_tag}: missing ${MISSING_PKGS}"
+		echo "pkg: desktop '${_tag}' unavailable (missing:${MISSING_PKGS})" | tee -a "$LOGFILE"
+	fi
+done
+AVAILABLE_DESKTOPS=$(echo "$AVAILABLE_DESKTOPS" | sed 's/^ *//')
+UNAVAILABLE_DESKTOPS=$(echo "$UNAVAILABLE_DESKTOPS" | sed 's/^ *//')
+
+if [ -n "$UNAVAILABLE_DESKTOPS" ] ; then
+	echo "pkg: desktops removed from selection: $UNAVAILABLE_DESKTOPS" | tee -a "$LOGFILE"
+	if ! is_noninteractive ; then
+		dialog --title "Unavailable desktops" --msgbox "These desktops were removed because required packages are not in the pkg catalog:${UNAVAILABLE_DESKTOP_DETAIL}\n\n(Often a renamed/removed port — e.g. old plasma5 names.)\nSee installx.log for details." 0 0
+	fi
+fi
+
+if [ -z "$AVAILABLE_DESKTOPS" ] ; then
+	echo "FATAL: no desktops have all required packages available in the catalog." | tee -a "$LOGFILE"
+	if ! is_noninteractive ; then
+		dialog --msgbox "No desktop options are installable from the current package catalog. Check network/pkg and installx.log." 0 0
+	fi
+	exit 1
+fi
 
 if is_noninteractive ; then
 	desktop="${INSTALLX_DESKTOP:-awesome}"
 	echo "noninteractive: desktop=$desktop" | tee -a "$LOGFILE"
+	# Fail CI/automation if requested desktop was filtered out
+	_want=$(echo "$desktop" | tr '[:upper:]' '[:lower:]')
+	_ok=0
+	for _tag in $AVAILABLE_DESKTOPS ; do
+		_t=$(echo "$_tag" | tr '[:upper:]' '[:lower:]')
+		if [ "$_t" = "$_want" ] ; then
+			_ok=1
+			desktop="$_tag"
+			break
+		fi
+	done
+	if [ "$_ok" -ne 1 ] ; then
+		_req=$(desktop_required_pkgs "$INSTALLX_DESKTOP")
+		pkgs_find_missing $_req || true
+		echo "FATAL: desktop '$INSTALLX_DESKTOP' is not available in the package catalog." | tee -a "$LOGFILE"
+		echo "FATAL: required packages: $_req" | tee -a "$LOGFILE"
+		echo "FATAL: missing from catalog: ${MISSING_PKGS:-unknown}" | tee -a "$LOGFILE"
+		echo "FATAL: available desktops: $AVAILABLE_DESKTOPS" | tee -a "$LOGFILE"
+		echo "FATAL: unavailable: $UNAVAILABLE_DESKTOPS" | tee -a "$LOGFILE"
+		exit 1
+	fi
 else
-	desktop=$(dialog --clear --title "Select Desktop" \
-	        --menu "Select desktop environment or compositor to install:\n(X11 and Wayland options are listed together; setup is chosen automatically.)" 0 0 0 \
-	        "KDE"  "KDE Plasma (X11)" \
-	        "GNOME" "GNOME desktop (X11)" \
-	        "Xfce4" "Lightweight XFCE desktop (X11)" \
-	        "MATE"  "MATE desktop, GNOME 2 fork (X11)" \
-	        "Cinnamon" "Cinnamon desktop (X11)" \
-	        "LXQT" "Lightweight Qt desktop (X11)" \
-	        "LXDE"  "Lightweight X11 desktop (X11)" \
-	        "WindowMaker" "Window Maker (X11)" \
-	        "awesome" "Awesome tiling WM (X11)" \
-	        "Sway" "Sway tiling compositor (Wayland)" \
-	        "Hyprland" "Hyprland compositor (Wayland)" \
-	        --stdout)
+	# Build dialog --menu args only for available desktops
+	_menu_cmd='dialog --clear --title "Select Desktop" --menu "Select desktop environment or compositor to install:\n(X11 and Wayland listed together; unavailable options already removed.)" 0 0 0'
+	for _tag in $AVAILABLE_DESKTOPS ; do
+		_lab=$(desktop_menu_label "$_tag")
+		_menu_cmd="$_menu_cmd \"$_tag\" \"$_lab\""
+	done
+	_menu_cmd="$_menu_cmd --stdout"
+	desktop=$(eval "$_menu_cmd") || true
+	if [ -z "$desktop" ] ; then
+		echo "No desktop selected; exiting." | tee -a "$LOGFILE"
+		exit 1
+	fi
 fi
 
 # Normalize so dialog labels (WindowMaker, Xfce4, …) and CI env vars match.
@@ -413,7 +566,6 @@ desktop_key=$(echo "$desktop" | tr '[:upper:]' '[:lower:]')
 case $desktop_key in
   kde)
       # FreeBSD handbook: pkg install kde (Plasma 6 meta); X11 session is startplasma-x11
-      # (kde5/plasma5-* packages were removed — they break pkg install on 14/15)
       gen_xinit "startplasma-x11"
       DESKTOP_PKGS="kde"
       DISPLAY_MGR="sddm"
@@ -508,24 +660,44 @@ grep "proc /proc procfs" /etc/fstab || echo "proc /proc procfs rw 0 0" >> /etc/f
 if is_noninteractive ; then
 	# Keep the default extras small for CI; override with INSTALLX_EXTRA_PKGS
 	extra_pkgs="${INSTALLX_EXTRA_PKGS-bash sudo}"
+	extra_pkgs=$(pkgs_filter_available $extra_pkgs)
 	echo "noninteractive: extra_pkgs=$extra_pkgs" | tee -a "$LOGFILE"
 else
-	extra_pkgs=$(dialog --checklist "Select additional packages to install:" 0 0 0 \
-	firefox "Firefox Web browser" on \
-	bash "GNU Bourne-Again SHell" on \
-	vim "VI Improved" on \
-	git-lite "Lightweight Git client" on \
-	sudo "Superuser do" on \
-	thunderbird "Thunderbird Email Client" off \
-	obs-studio "OBS-Studio recording/casting" off \
-	audacity "Audio editor" off \
-	simplescreenrecorder "Does it need a description?" off \
-	libreoffice "Open source office suite" off \
-	vlc "Video player" off \
-	doas "Simpler alternative to sudo" off \
-	linux_base-c7 "CentOS v7 linux binary compatiblity layer" off \
-	virtualbox-ose-additions "VirtualBox guest additions" off \
-	--stdout)
+	# Only offer extras that exist in the catalog
+	_extra_cmd='dialog --checklist "Select additional packages to install:\n(Unavailable packages already removed.)" 0 0 0'
+	_extra_skipped=""
+	for _line in \
+		"firefox|Firefox Web browser|on" \
+		"bash|GNU Bourne-Again SHell|on" \
+		"vim|VI Improved|on" \
+		"git-lite|Lightweight Git client|on" \
+		"sudo|Superuser do|on" \
+		"thunderbird|Thunderbird Email Client|off" \
+		"obs-studio|OBS-Studio recording/casting|off" \
+		"audacity|Audio editor|off" \
+		"simplescreenrecorder|Does it need a description?|off" \
+		"libreoffice|Open source office suite|off" \
+		"vlc|Video player|off" \
+		"doas|Simpler alternative to sudo|off" \
+		"linux_base-c7|CentOS v7 linux binary compatiblity layer|off" \
+		"virtualbox-ose-additions|VirtualBox guest additions|off"
+	do
+		_en=$(echo "$_line" | cut -d'|' -f1)
+		_ed=$(echo "$_line" | cut -d'|' -f2)
+		_eo=$(echo "$_line" | cut -d'|' -f3)
+		if pkg_is_available "$_en" ; then
+			_extra_cmd="$_extra_cmd \"$_en\" \"$_ed\" $_eo"
+		else
+			_extra_skipped="${_extra_skipped} ${_en}"
+			echo "pkg: extra package not in catalog, removed from menu: ${_en}" | tee -a "$LOGFILE"
+		fi
+	done
+	if [ -n "$_extra_skipped" ] ; then
+		echo "pkg: extras removed from selection:${_extra_skipped}" | tee -a "$LOGFILE"
+	fi
+	_extra_cmd="$_extra_cmd --stdout"
+	extra_pkgs=$(eval "$_extra_cmd") || extra_pkgs=""
+	extra_pkgs=$(echo "$extra_pkgs" | tr -d '"')
 fi
 
 echo "Extra packages:" "$extra_pkgs" | tee -a "$LOGFILE"
@@ -1054,8 +1226,31 @@ case "$DISPLAY_MGR" in
 	sddm|slim|gdm|ly) dm_pkgs="$DISPLAY_MGR" ;;
 esac
 
-# Final package list for install
+# Final package list for install — drop anything still missing from the catalog
 all_pkgs="$display_stack dbus $DESKTOP_PKGS $extra_pkgs $vc_pkgs $dm_pkgs $slim_extra_pkgs $audio_pkgs"
+all_pkgs=$(echo "$all_pkgs" | tr -s ' ')
+
+# Required set must still be fully available (desktop + display stack + DM)
+_required_final=$(desktop_required_pkgs "$desktop_key")
+# Also require whatever we put in DESKTOP_PKGS / display stack / dm
+_required_final="$_required_final $DESKTOP_PKGS $display_stack $dm_pkgs dbus"
+if ! pkgs_find_missing $_required_final ; then
+	echo "FATAL: required packages missing from catalog before install: $MISSING_PKGS" | tee -a "$LOGFILE"
+	echo "FATAL: desktop=$desktop_key all_pkgs would have been: $all_pkgs" | tee -a "$LOGFILE"
+	if ! is_noninteractive ; then
+		dialog --msgbox "Cannot install: required packages are not in the catalog:\n\n${MISSING_PKGS}\n\nThe corresponding desktop or feature cannot be used. See installx.log." 0 0
+	fi
+	exit 1
+fi
+
+# Optional packages (extras, audio helpers, video DDX, etc.): drop missing rather than fail
+_before_all="$all_pkgs"
+all_pkgs=$(pkgs_filter_available $all_pkgs)
+if [ -z "$all_pkgs" ] ; then
+	echo "FATAL: package list empty after catalog filter" | tee -a "$LOGFILE"
+	exit 1
+fi
+echo "pkg: final install set: $all_pkgs" | tee -a "$LOGFILE"
 
 # check to see if we should set the user shell to bash
 # (moved after all_pkgs is known; previously referenced all_pkgs before it was set)
