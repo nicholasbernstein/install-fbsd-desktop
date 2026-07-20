@@ -26,6 +26,12 @@ is_noninteractive() {
 	[ "${INSTALLX_NONINTERACTIVE:-0}" = "1" ] || [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ]
 }
 
+# Avoid interactive pkg prompts (and OSVERSION skew) when driven by CI
+if is_noninteractive ; then
+	export ASSUME_ALWAYS_YES=yes
+	export IGNORE_OSVERSION="${IGNORE_OSVERSION:-yes}"
+fi
+
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
 
 change_pkg_url_to_latest () {

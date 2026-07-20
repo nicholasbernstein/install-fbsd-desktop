@@ -46,8 +46,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Keep the matrix small for weekly cost; expand as needed
-        release: ["14.3"]
+        # Match a release whose pkg ABI still tracks the FreeBSD.org mirrors.
+        # 14.3 failed when the 14-amd64 quarterly tree advanced to 14.4 packages
+        # (pkg OSVERSION mismatch). Prefer current 14.x / 15.x as they age out.
+        release: ["14.4"]
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +64,9 @@ jobs:
           copyback: true
           prepare: |
             set -e
+            # Non-interactive pkg; tolerate minor ABI skew if a mirror is ahead of the image
+            export ASSUME_ALWAYS_YES=yes
+            export IGNORE_OSVERSION=yes
             pkg update -f
             # dialog is only needed for interactive runs; noninteractive path skips it.
             # git not required; sources are synced from the runner.
@@ -69,6 +74,9 @@ jobs:
           run: |
             set -e
             set -x
+            # Same pkg knobs for installx.sh (it runs pkg update/install itself)
+            export ASSUME_ALWAYS_YES=yes
+            export IGNORE_OSVERSION=yes
             cd "$GITHUB_WORKSPACE" 2>/dev/null || cd "$(pwd)"
             freebsd-version
             uname -a
