@@ -114,36 +114,61 @@ installx_run_interruptible() {
 }
 
 # Generic progress gauge while a background PID runs (pulsing bar).
-# $1=title $2=body text $3=pid to watch
+# $1=title $2=body text (may contain \n escapes) $3=pid to watch
+#
+# dialog/bsddialog gauge stdin protocol (see bsddialog(1) EXAMPLES):
+#   XXX
+#   <percent>
+#   <prompt lines…>
+#   XXX
+# Pipe must be line-buffered or updates sit in stdio until the child exits.
 installx_gauge_while_pid() {
 	_gtitle="$1"
-	_gtext="$2"
-	_gpid="$3"
-	if [ -z "${DIALOG_BIN:-}" ] || [ -z "${_gpid}" ] ; then
-		wait "${_gpid}" 2>/dev/null || true
+	# Expand \n escapes to real newlines — printf %s leaves them literal
+	INSTALLX_GAUGE_TEXT=$(printf '%b' "$2")
+	INSTALLX_GAUGE_WATCH_PID="$3"
+	export INSTALLX_GAUGE_TEXT INSTALLX_GAUGE_WATCH_PID
+	if [ -z "${DIALOG_BIN:-}" ] || [ -z "${INSTALLX_GAUGE_WATCH_PID}" ] ; then
+		wait "${INSTALLX_GAUGE_WATCH_PID}" 2>/dev/null || true
+		unset INSTALLX_GAUGE_TEXT INSTALLX_GAUGE_WATCH_PID
 		return 0
 	fi
 	if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ] || [ "$TERM" = "unknown" ] ; then
 		TERM=xterm
 		export TERM
 	fi
-	# Pipe feeder → gauge in foreground so the bar paints immediately (no FIFO deadlock).
-	# Keep INSTALLX_CHILD_PID as the real work PID for Ctrl+C; gauge is separate.
-	(
-		# Immediate first frame — no sleep before first paint
-		printf '%s\n' "XXX" "${_gtext}" "XXX" "1"
-		_pct=4
-		while kill -0 "${_gpid}" 2>/dev/null ; do
-			printf '%s\n' "XXX" "${_gtext}" "XXX" "${_pct}"
-			_pct=$((_pct + 3))
-			if [ "${_pct}" -ge 95 ] ; then
-				_pct=5
-			fi
-			# Short sleep so the bar stays lively without starving the CPU
-			sleep 0.3 2>/dev/null || sleep 1
-		done
-		printf '%s\n' "XXX" "Finishing…" "XXX" "100"
-	) | "$DIALOG_BIN" --title "installx" --gauge "${_gtitle}" 12 60 0
+	# Feeder → gauge in foreground (no FIFO deadlock). stdbuf -oL so each
+	# frame is flushed; without it, pipe buffering freezes the bar at 0%.
+	# INSTALLX_CHILD_PID stays the real work PID for Ctrl+C.
+	if command -v stdbuf >/dev/null 2>&1 ; then
+		stdbuf -oL sh -c '
+			printf "XXX\n%d\n%s\nXXX\n" 1 "$INSTALLX_GAUGE_TEXT"
+			_pct=4
+			while kill -0 "$INSTALLX_GAUGE_WATCH_PID" 2>/dev/null ; do
+				printf "XXX\n%d\n%s\nXXX\n" "$_pct" "$INSTALLX_GAUGE_TEXT"
+				_pct=$((_pct + 3))
+				if [ "$_pct" -ge 95 ] ; then _pct=5 ; fi
+				sleep 0.3 2>/dev/null || sleep 1
+			done
+			printf "XXX\n%d\n%s\nXXX\n" 100 "Finishing…"
+		' | "$DIALOG_BIN" --title "installx" --gauge "${_gtitle}" 12 60 0
+	else
+		# Fallback: awk fflush after every frame (no stdbuf)
+		awk 'BEGIN {
+			gtext = ENVIRON["INSTALLX_GAUGE_TEXT"]
+			gpid = ENVIRON["INSTALLX_GAUGE_WATCH_PID"]
+			printf "XXX\n%d\n%s\nXXX\n", 1, gtext; fflush()
+			pct = 4
+			while (system("kill -0 " gpid " 2>/dev/null") == 0) {
+				printf "XXX\n%d\n%s\nXXX\n", pct, gtext; fflush()
+				pct += 3
+				if (pct >= 95) pct = 5
+				system("sleep 0.3 2>/dev/null || sleep 1")
+			}
+			printf "XXX\n%d\n%s\nXXX\n", 100, "Finishing…"; fflush()
+		}' | "$DIALOG_BIN" --title "installx" --gauge "${_gtitle}" 12 60 0
+	fi
+	unset INSTALLX_GAUGE_TEXT INSTALLX_GAUGE_WATCH_PID
 }
 
 # pkg update with an interactive gauge. Sets INSTALLX_RUN_RC.
@@ -151,10 +176,11 @@ installx_pkg_update_with_progress() {
 	_gauge_title="${1:-Updating package catalog}"
 	_gauge_text="${2:-Updating the package catalog…\n\nPlease wait.\nCtrl+C aborts.}"
 
-	# Console line always — even if the gauge fails, the user sees activity
-	echo "installx: ${_gauge_title}…" | tee -a "$LOGFILE"
-
+	# Log always; avoid printing to the console right before a gauge (it
+	# corrupts the TUI transition from welcome → progress).
+	echo "installx: ${_gauge_title}…" >> "$LOGFILE"
 	if is_noninteractive || [ -z "${DIALOG_BIN:-}" ] ; then
+		echo "installx: ${_gauge_title}…"
 		installx_run_interruptible sh -c "pkg update 2>&1 | tee -a \"${LOGFILE}\""
 		return "${INSTALLX_RUN_RC}"
 	fi
@@ -371,26 +397,32 @@ report(){
 # this is mainly just to make sure pkg has been bootstrapped
 export ASSUME_ALWAYS_YES=yes
 if ! is_noninteractive ; then
-	# Welcome → progress with no gap (user should never wonder if we hung)
-	dialog --title "installx" --msgbox "Welcome to install-fbsd-desktop.\n\nThis program will guide you through sensible choices when installing a FreeBSD desktop.\n\nYou can cancel a screen with Esc, quit from the desktop menu, or press Ctrl+C to abort at any time." 12 60
+	# First interactive UI: welcome must block for OK before any progress gauge.
+	dialog --title "installx" --msgbox \
+"Welcome to install-fbsd-desktop.
+
+This program will guide you through sensible choices when installing a FreeBSD desktop.
+
+You can cancel a screen with Esc, quit from the desktop menu, or press Ctrl+C to abort at any time." 12 60
 	_drc=$?
 	if [ "$_drc" -ge 128 ] ; then
 		installx_abort INT
 	fi
-	if [ "$_drc" -eq 1 ] || [ "$_drc" -eq 255 ] ; then
+	# Cancel/ESC: dialog=1/255, bsddialog Cancel=1 ESC=5
+	if [ "$_drc" -eq 1 ] || [ "$_drc" -eq 5 ] || [ "$_drc" -eq 255 ] ; then
 		echo "installx: cancelled at welcome screen." | tee -a "$LOGFILE"
 		exit 0
 	fi
 	if [ "$_drc" -ne 0 ] ; then
-		echo "error: dialog UI failed (exit ${_drc}). TERM=${TERM:-unset}" >&2
+		echo "error: dialog UI failed (exit ${_drc}). TERM=${TERM:-unset} DIALOG_BIN=${DIALOG_BIN}" >&2
 		exit 1
 	fi
 fi
-# Progress UI starts in the same breath as OK (no silent work before the gauge)
+# Progress UI starts right after OK (no silent work before the gauge)
 installx_pkg_update_with_progress "Package catalog" "Updating the package catalog…\n\nPlease wait.\nCtrl+C aborts."
 report "pkg bootstrapping" "$INSTALLX_RUN_RC"
 if ! is_noninteractive ; then
-	echo "installx: package catalog ready; continuing…" | tee -a "$LOGFILE"
+	echo "installx: package catalog ready; continuing…" >> "$LOGFILE"
 fi
 
 add_user_to_video() {
