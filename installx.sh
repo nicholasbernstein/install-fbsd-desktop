@@ -15,7 +15,7 @@ date > "$LOGFILE"
 #   INSTALLX_DESKTOP       desktop/compositor name (default: awesome)
 #                          X11: KDE LXDE LXQT GNOME Xfce4 WindowMaker awesome MATE Cinnamon
 #                          Wayland: Sway Hyprland  (same menu; stack is chosen automatically)
-#   INSTALLX_ROLLING       yes|no — use pkg "latest" (default: yes)
+#   INSTALLX_ROLLING       yes|no — use pkg "latest" instead of quarterly (default: no)
 #   INSTALLX_EXTRA_PKGS    space-separated packages (default: bash sudo)
 #   INSTALLX_OPT           space-separated option names matching the dialog checklist (see below)
 #   INSTALLX_GRAPHICS      yes|no|auto — install GPU drivers (default: no).
@@ -220,25 +220,19 @@ fi
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
 
 change_pkg_url_to_latest () {
-	# FreeBSD 14/15: repo configs live in /etc/pkg and/or /usr/local/etc/pkg/repos.
-	# 15.x quarterly may omit heavy metas like x11/kde; "latest" is required for those.
-	# Always force an enabled latest FreeBSD repo rather than only string-replacing quarterly.
-	_switched=0
+	# Opt-in only (INSTALLX_ROLLING=yes or interactive Yes). Default remains quarterly.
+	# Repo configs: /etc/pkg and/or /usr/local/etc/pkg/repos.
 	for _pf in /etc/pkg/FreeBSD.conf /usr/local/etc/pkg/repos/FreeBSD.conf ; do
-		if [ -f "$_pf" ] ; then
-			if grep -q 'quarterly' "$_pf" 2>/dev/null ; then
-				# FreeBSD sed: -i extension (backup suffix)
-				sed -i '.bak' -e 's/quarterly/latest/g' "$_pf"
-				_switched=1
-				echo "pkg: rewrote quarterly→latest in $_pf" | tee -a "$LOGFILE"
-			fi
-			grep -H 'url' "$_pf" 2>/dev/null | tee -a "$LOGFILE" || true
+		if [ -f "$_pf" ] && grep -q 'quarterly' "$_pf" 2>/dev/null ; then
+			sed -i '.bak' -e 's/quarterly/latest/g' "$_pf"
+			echo "pkg: rewrote quarterly→latest in $_pf" | tee -a "$LOGFILE"
 		fi
+		[ -f "$_pf" ] && grep -H 'url' "$_pf" 2>/dev/null | tee -a "$LOGFILE" || true
 	done
-	# Ensure a local override wins (pkg merges /usr/local/etc/pkg/repos/*.conf)
+	# Local override so "latest" wins if base conf was already non-quarterly
 	mkdir -p /usr/local/etc/pkg/repos
 	cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<'PKGEOF'
-# installx.sh — force package set "latest" for workstation desktop packages
+# installx.sh — only written when user opts into the "latest" package set
 FreeBSD: {
   url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest",
   mirror_type: "srv",
@@ -247,11 +241,7 @@ FreeBSD: {
   enabled: yes
 }
 PKGEOF
-	echo "pkg: wrote /usr/local/etc/pkg/repos/FreeBSD.conf (latest)" | tee -a "$LOGFILE"
-	# Show effective config after override
-	if command -v pkg >/dev/null 2>&1 ; then
-		pkg -vv 2>/dev/null | grep -A2 'url' | head -n 20 | tee -a "$LOGFILE" || true
-	fi
+	echo "pkg: wrote /usr/local/etc/pkg/repos/FreeBSD.conf (latest, opt-in)" | tee -a "$LOGFILE"
 }
 
 load_card_readers () {
@@ -572,21 +562,24 @@ apply_display_manager() {
 }
 
 if is_noninteractive ; then
-	case "${INSTALLX_ROLLING:-yes}" in
-		[Nn][Oo]|0|false|FALSE) rolling=1 ;;
-		*) rolling=0 ;;
+	# Default: stay on quarterly. Opt in with INSTALLX_ROLLING=yes.
+	case "${INSTALLX_ROLLING:-no}" in
+		[Yy][Ee][Ss]|1|true|TRUE) rolling=0 ;;
+		*) rolling=1 ;;
 	esac
-	echo "noninteractive: rolling(latest pkg)=$( [ "$rolling" -eq 0 ] && echo yes || echo no )" | tee -a "$LOGFILE"
+	echo "noninteractive: use_latest_packages=$( [ "$rolling" -eq 0 ] && echo yes || echo no )" | tee -a "$LOGFILE"
 else
-	dialog --title "Rolling Release" --yesno "Change pkg to use 'latest' packages instead of quarterly? Recommended for workstations. This prevents potential missing firefox package in 13.1 quarterly" 0 0
+	# --defaultno: quarterly is the recommended/default choice
+	dialog --defaultno --title "Package branch" --yesno "Stay on quarterly packages (recommended), or switch to 'latest'?\n\n• No  = quarterly (default, more conservative)\n• Yes = latest (newer ports; some desktops may only appear here)\n\nMost users should choose No." 12 60
 	rolling=$?
 fi
 
 if [ "$rolling" -eq 0  ] ; then 
 	change_pkg_url_to_latest
 	report "quarterly->latest changed" "$?"
-	# Catalog must match the repo we will install from
 	installx_pkg_update_with_progress "Package catalog (latest)" "Refreshing the package catalog…\n\nPlease wait.\nCtrl+C aborts."
+else
+	echo "pkg: staying on quarterly package set" | tee -a "$LOGFILE"
 fi
 
 # ---------------------------------------------------------------------------

@@ -40,8 +40,12 @@ test_session_files() {
   fi
 }
 
-test_pkg_url_to_latest() { 
-	assertContains ["latest"] "$(grep url /etc/pkg/FreeBSD.conf)" 'latest'
+test_pkg_repo_url_configured() {
+	# Default is quarterly; latest only if the user opted in. Either is fine.
+	_urls=$(grep -rh 'url' /etc/pkg /usr/local/etc/pkg 2>/dev/null || true)
+	assertTrue "pkg repo url configured" "[ -n \"${_urls}\" ]"
+	assertTrue "pkg repo is quarterly or latest" \
+		"echo \"${_urls}\" | grep -Eq 'quarterly|latest'"
 }
 
 test_fuse(){
