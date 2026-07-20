@@ -112,11 +112,11 @@ installx_run_interruptible() {
 }
 
 # pkg update with an interactive gauge (dialog/bsddialog --gauge).
-# pkg does not emit a stable percent, so the bar pulses until the job finishes.
+# Opens the gauge at 0% immediately, then pulses until pkg finishes.
 # Sets INSTALLX_RUN_RC. Logs full pkg output to LOGFILE.
 installx_pkg_update_with_progress() {
 	_gauge_title="${1:-Updating package catalog}"
-	_gauge_text="${2:-Fetching package repository metadata…\n\nThis may take a minute.\nCtrl+C aborts.}"
+	_gauge_text="${2:-Updating the package catalog…\n\nPlease wait.\nCtrl+C aborts.}"
 
 	if is_noninteractive || [ -z "${DIALOG_BIN:-}" ] ; then
 		installx_run_interruptible sh -c "pkg update 2>&1 | tee -a \"${LOGFILE}\""
@@ -125,39 +125,67 @@ installx_pkg_update_with_progress() {
 
 	_pkg_out=$(mktemp /tmp/installx-pkgup.XXXXXX) || _pkg_out="/tmp/installx-pkgup.$$"
 	_pkg_rcfile="${_pkg_out}.rc"
+	_fifo=$(mktemp -u /tmp/installx-gauge.XXXXXX) || _fifo="/tmp/installx-gauge.$$"
+	mkfifo "${_fifo}" || {
+		# Fallback without fifo: still try piped gauge
+		_fifo=""
+	}
 
-	# Start pkg update in the background; capture all output for the log
-	( pkg update >"${_pkg_out}" 2>&1; echo $? >"${_pkg_rcfile}" ) &
-	INSTALLX_CHILD_PID=$!
+	if [ -n "${_fifo}" ] ; then
+		# Start gauge first so the user sees progress the instant welcome closes
+		if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ] || [ "$TERM" = "unknown" ] ; then
+			TERM=xterm
+			export TERM
+		fi
+		"$DIALOG_BIN" --title "installx" --gauge "${_gauge_title}" 12 60 0 <"${_fifo}" &
+		INSTALLX_GAUGE_PID=$!
+		# Open writer end (must stay open for gauge lifetime)
+		exec 3>"${_fifo}"
+		rm -f "${_fifo}"
+		# Paint 0% immediately
+		printf '%s\n' "XXX" "${_gauge_text}" "XXX" "0" >&3
 
-	# Feed a pulsing percentage into --gauge until pkg exits
-	(
-		_pct=1
+		# Start pkg after the bar is visible
+		( pkg update >"${_pkg_out}" 2>&1; echo $? >"${_pkg_rcfile}" ) &
+		INSTALLX_CHILD_PID=$!
+
+		_pct=3
 		while kill -0 "${INSTALLX_CHILD_PID}" 2>/dev/null ; do
-			# dialog gauge protocol: optional XXX message block, then percent
-			echo "XXX"
-			echo "${_gauge_text}"
-			echo "XXX"
-			echo "${_pct}"
+			printf '%s\n' "XXX" "${_gauge_text}" "XXX" "${_pct}" >&3
 			_pct=$((_pct + 2))
 			if [ "${_pct}" -ge 95 ] ; then
 				_pct=5
 			fi
 			sleep 1
 		done
-		echo "XXX"
-		echo "Finishing…"
-		echo "XXX"
-		echo 100
-	) | "$DIALOG_BIN" --title "installx" --gauge "${_gauge_title}" 12 60 0 &
-	INSTALLX_GAUGE_PID=$!
+		printf '%s\n' "XXX" "Finishing…" "XXX" "100" >&3
+		exec 3>&-
 
-	wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
-	INSTALLX_CHILD_PID=""
-
-	# Close the gauge
-	installx_kill_pid "${INSTALLX_GAUGE_PID:-}"
-	INSTALLX_GAUGE_PID=""
+		wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
+		INSTALLX_CHILD_PID=""
+		installx_kill_pid "${INSTALLX_GAUGE_PID:-}"
+		INSTALLX_GAUGE_PID=""
+	else
+		# No fifo: old pipe approach
+		( pkg update >"${_pkg_out}" 2>&1; echo $? >"${_pkg_rcfile}" ) &
+		INSTALLX_CHILD_PID=$!
+		(
+			printf '%s\n' "XXX" "${_gauge_text}" "XXX" "0"
+			_pct=3
+			while kill -0 "${INSTALLX_CHILD_PID}" 2>/dev/null ; do
+				printf '%s\n' "XXX" "${_gauge_text}" "XXX" "${_pct}"
+				_pct=$((_pct + 2))
+				[ "${_pct}" -ge 95 ] && _pct=5
+				sleep 1
+			done
+			printf '%s\n' "XXX" "Finishing…" "XXX" "100"
+		) | "$DIALOG_BIN" --title "installx" --gauge "${_gauge_title}" 12 60 0 &
+		INSTALLX_GAUGE_PID=$!
+		wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
+		INSTALLX_CHILD_PID=""
+		installx_kill_pid "${INSTALLX_GAUGE_PID:-}"
+		INSTALLX_GAUGE_PID=""
+	fi
 
 	if [ -f "${_pkg_rcfile}" ] ; then
 		INSTALLX_RUN_RC=$(cat "${_pkg_rcfile}")
