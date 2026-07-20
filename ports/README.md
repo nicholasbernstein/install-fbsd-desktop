@@ -2,8 +2,6 @@
 
 This directory is a **ports-tree ready** skeleton for packaging `installx`.
 
-**Maintainer:** Nicholas Bernstein <install-fbsd-desktop@nicholasbernstein.com>
-
 | Path | Role |
 |------|------|
 | `sysutils/install-fbsd-desktop/Makefile` | Port definition |

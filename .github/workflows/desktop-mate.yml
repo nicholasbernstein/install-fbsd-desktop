@@ -1,8 +1,10 @@
-# Heavier DE — weekly + manual by default (also runs on PR for coverage).
+# Desktop smoketest — push, PR, weekly, manual.
 
 name: Desktop / MATE
 
 on:
+  push:
+    branches: [main, master]
   pull_request:
   schedule:
     - cron: "50 6 * * 1"

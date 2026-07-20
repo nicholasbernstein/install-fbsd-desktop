@@ -16,20 +16,22 @@ fetch https://raw.githubusercontent.com/nicholasbernstein/install-fbsd-desktop/m
 
 ## FreeBSD port / package
 
-A ports skeleton lives under `ports/sysutils/install-fbsd-desktop/`
-(maintainer: Nicholas Bernstein <install-fbsd-desktop@nicholasbernstein.com>).
+A ports skeleton lives under `ports/sysutils/install-fbsd-desktop/`.
+CI builds a `.pkg` and publishes GitHub Release assets when content changes
+(see `.github/workflows/package-release.yml`).
 
 On FreeBSD, from this checkout:
 
 ```sh
+sh scripts/build-freebsd-pkg.sh
+# or via the port:
 cd ports/sysutils/install-fbsd-desktop
 make package          # or: make install clean
-# then, if you built a package:
 pkg install ./work/pkg/install-fbsd-desktop-*.pkg
 ```
 
 That installs `installx` (and symlink `install-fbsd-desktop`) to `${PREFIX}/sbin`.
-See `ports/README.md` for GitHub distfile builds and copying into `/usr/ports`.
+See `ports/README.md` for details.
 
 ## What gets installed
 
@@ -65,13 +67,14 @@ by `update-freebsd-releases.yml`). Pin a single version with the reusable workfl
 | `desktop-xfce4.yml` | Xfce4 | yes | yes | yes |
 | `desktop-sway.yml` | Sway (Wayland) | yes | yes | yes |
 | `desktop-hyprland.yml` | Hyprland (Wayland) | yes | yes | yes |
-| `desktop-mate.yml` | MATE | PR only | yes | yes |
-| `desktop-cinnamon.yml` | Cinnamon | PR only | yes | yes |
-| `desktop-kde.yml` | KDE | PR only | yes | yes |
-| `desktop-gnome.yml` | GNOME | PR only | yes | yes |
+| `desktop-mate.yml` | MATE | yes | yes | yes |
+| `desktop-cinnamon.yml` | Cinnamon | yes | yes | yes |
+| `desktop-kde.yml` | KDE | yes | yes | yes |
+| `desktop-gnome.yml` | GNOME | yes | yes | yes |
+| `package-release.yml` | build `.pkg` + GitHub Release | yes | — | yes |
 
-Heavier DEs skip plain pushes so default CI stays lighter; re-run any
-workflow from the Actions tab (`workflow_dispatch`).
+All desktop smoketests and the package/release job run on every push to `main`.
+Re-run any workflow from the Actions tab (`workflow_dispatch`).
 
 Noninteractive env knobs (also used by CI):
 

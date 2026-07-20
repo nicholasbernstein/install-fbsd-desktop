@@ -1,8 +1,10 @@
-# Heavy DE — weekly + manual (+ PR). Skip push to keep default CI lighter.
+# Desktop smoketest — push, PR, weekly, manual.
 
 name: Desktop / GNOME
 
 on:
+  push:
+    branches: [main, master]
   pull_request:
   schedule:
     - cron: "20 7 * * 1"
