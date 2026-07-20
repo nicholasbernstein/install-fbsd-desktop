@@ -11,6 +11,21 @@ ERRLOG="installx.err"
 exec 2>"$ERRLOG"
 date > "$LOGFILE"
 
+# Non-interactive / CI mode: set INSTALLX_NONINTERACTIVE=1 (or CI=true).
+# Optional env overrides:
+#   INSTALLX_USER          user to add to video/wheel (default: uid 1001 or "nick")
+#   INSTALLX_DESKTOP       KDE|LXDE|LXQT|GNOME|Xfce4|WindowMaker|awesome|MATE (default: awesome)
+#   INSTALLX_ROLLING       yes|no — use pkg "latest" (default: yes)
+#   INSTALLX_EXTRA_PKGS    space-separated packages (default: bash sudo)
+#   INSTALLX_OPT           space-separated option names matching the dialog checklist (see below)
+#   INSTALLX_GRAPHICS      yes|no — try to install GPU drivers (default: no)
+#   INSTALLX_VIDEO_CARD    i915kms|radeonkms|amdgpu|nvidia|vesa|scfb (if GRAPHICS=yes)
+#   INSTALLX_BASH_SHELL    yes|no — set user shell to bash (default: yes if bash installed)
+#   INSTALLX_SUDO_WHEEL    yes|no — allow %wheel to sudo (default: yes if sudo installed)
+is_noninteractive() {
+	[ "${INSTALLX_NONINTERACTIVE:-0}" = "1" ] || [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ]
+}
+
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
 
 change_pkg_url_to_latest () {
@@ -112,10 +127,14 @@ linuxBaseC7 () {
 			echo "tmpfs    /compat/linux/dev/shm  tmpfs rw,mode=1777 0 0" >> /etc/fstab
 }
 
-virtualbox-ose-additions() {
+enable_virtualbox_ose_additions() {
 		sysrc vboxguest_enable="YES"
 		sysrc vboxservice_enable="YES"
-		dialog --infobox "Please use VBoxSVGA as the virtualbox display driver for best performance." 0 0
+		if ! is_noninteractive ; then
+			dialog --infobox "Please use VBoxSVGA as the virtualbox display driver for best performance." 0 0
+		else
+			echo "noninteractive: VirtualBox guest additions enabled; use VBoxSVGA for best performance." | tee -a "$LOGFILE"
+		fi
 }
 
 adjust_sysctl_buffers() { 
@@ -147,7 +166,20 @@ report "add sync buffers" "$?"
 add_user_to_video() {
 	# Your user needs to be in the video group to use video acceleration
 	default_user=`grep 1001 /etc/passwd | awk -F: '{ print $1 }'`
-	VUSER=`dialog --title "Video User" --clear  --inputbox "What user should be added to the video group?" 0 0  $default_user --stdout`
+	if is_noninteractive ; then
+		VUSER="${INSTALLX_USER:-${default_user:-nick}}"
+		echo "noninteractive: using video user '$VUSER'" | tee -a "$LOGFILE"
+	else
+		VUSER=`dialog --title "Video User" --clear  --inputbox "What user should be added to the video group?" 0 0  $default_user --stdout`
+	fi
+
+	# ensure home exists for .xinitrc and similar
+	if ! id "$VUSER" >/dev/null 2>&1 ; then
+		echo "user '$VUSER' does not exist; creating" | tee -a "$LOGFILE"
+		pw useradd -n "$VUSER" -m -s /bin/sh || true
+	fi
+	mkdir -p "/home/$VUSER"
+	chown "$VUSER" "/home/$VUSER" 2>/dev/null || true
 
 	pw groupmod video -m $VUSER && echo "added $VUSER to group: video"
 	report "add $VUSER to video group" "$?"
@@ -196,9 +228,16 @@ set_login_mgr
 report "set login manager" "$?"
 set +x
 
-dialog --title "Rolling Release" --yesno "Change pkg to use 'latest' packages instead of quarterly? Recommended for workstations. This prevents potential missing firefox package in 13.1 quarterly" 0 0
-
-rolling=$?
+if is_noninteractive ; then
+	case "${INSTALLX_ROLLING:-yes}" in
+		[Nn][Oo]|0|false|FALSE) rolling=1 ;;
+		*) rolling=0 ;;
+	esac
+	echo "noninteractive: rolling(latest pkg)=$( [ "$rolling" -eq 0 ] && echo yes || echo no )" | tee -a "$LOGFILE"
+else
+	dialog --title "Rolling Release" --yesno "Change pkg to use 'latest' packages instead of quarterly? Recommended for workstations. This prevents potential missing firefox package in 13.1 quarterly" 0 0
+	rolling=$?
+fi
 
 if [ "$rolling" -eq 0  ] ; then 
 	change_pkg_url_to_latest
@@ -206,16 +245,21 @@ if [ "$rolling" -eq 0  ] ; then
 fi
 
 
-desktop=$(dialog --clear --title "Select Desktop" \
-        --menu "Select desktop environment to be installed:" 0 0 0 \
-        "KDE"  "KDE (FBSD 12+ only)" \
-        "LXDE"  "The Lightweight X Desktop Environment" \
-		"LXQT" "Lightweight QT Desktop (FBSD 12+ only)" \
-        "GNOME" "The modern GNOME desktop" \
-        "Xfce4" "Lightweight XFCE desktop" \
-        "WindowMaker" "Bringing neXt back" \
-        "awesome" "A tiling window manager" \
-        "MATE"  "The MATE dekstop, a fork of GNOME 2" --stdout)
+if is_noninteractive ; then
+	desktop="${INSTALLX_DESKTOP:-awesome}"
+	echo "noninteractive: desktop=$desktop" | tee -a "$LOGFILE"
+else
+	desktop=$(dialog --clear --title "Select Desktop" \
+	        --menu "Select desktop environment to be installed:" 0 0 0 \
+	        "KDE"  "KDE (FBSD 12+ only)" \
+	        "LXDE"  "The Lightweight X Desktop Environment" \
+			"LXQT" "Lightweight QT Desktop (FBSD 12+ only)" \
+	        "GNOME" "The modern GNOME desktop" \
+	        "Xfce4" "Lightweight XFCE desktop" \
+	        "WindowMaker" "Bringing neXt back" \
+	        "awesome" "A tiling window manager" \
+	        "MATE"  "The MATE dekstop, a fork of GNOME 2" --stdout)
+fi
 
 # for any additional entries, please add a case statement below
 
@@ -289,49 +333,66 @@ grep "proc /proc procfs" /etc/fstab || echo "proc /proc procfs rw 0 0" >> /etc/f
 # A number of the more lightweight desktops don't include everything you need
 # and anyone coming from linux probably wants bash, sudo & vim. Let's make
 # the transition easy for them
-extra_pkgs=$(dialog --checklist "Select additional packages to install:" 0 0 0 \
-firefox "Firefox Web browser" on \
-bash "GNU Bourne-Again SHell" on \
-vim "VI Improved" on \
-git-lite "Lightweight Git client" on \
-sudo "Superuser do" on \
-thunderbird "Thunderbird Email Client" off \
-obs-studio "OBS-Studio recording/casting" off \
-audacity "Audio editor" off \
-simplescreenrecorder "Does it need a description?" off \
-libreoffice "Open source office suite" off \
-vlc "Video player" off \
-doas "Simpler alternative to sudo" off \
-linux_base-c7 "CentOS v7 linux binary compatiblity layer" off \
-virtualbox-ose-additions "VirtualBox guest additions" off \
---stdout)
+if is_noninteractive ; then
+	# Keep the default extras small for CI; override with INSTALLX_EXTRA_PKGS
+	extra_pkgs="${INSTALLX_EXTRA_PKGS-bash sudo}"
+	echo "noninteractive: extra_pkgs=$extra_pkgs" | tee -a "$LOGFILE"
+else
+	extra_pkgs=$(dialog --checklist "Select additional packages to install:" 0 0 0 \
+	firefox "Firefox Web browser" on \
+	bash "GNU Bourne-Again SHell" on \
+	vim "VI Improved" on \
+	git-lite "Lightweight Git client" on \
+	sudo "Superuser do" on \
+	thunderbird "Thunderbird Email Client" off \
+	obs-studio "OBS-Studio recording/casting" off \
+	audacity "Audio editor" off \
+	simplescreenrecorder "Does it need a description?" off \
+	libreoffice "Open source office suite" off \
+	vlc "Video player" off \
+	doas "Simpler alternative to sudo" off \
+	linux_base-c7 "CentOS v7 linux binary compatiblity layer" off \
+	virtualbox-ose-additions "VirtualBox guest additions" off \
+	--stdout)
+fi
 
-echo "Extra packages:" "$extra_packages" | tee -a "$LOGFILE"
+echo "Extra packages:" "$extra_pkgs" | tee -a "$LOGFILE"
 
 
 # by default install the full xorg, but if xorg_minimal is set, override it
 
 echo $extra_pkgs | grep -q linux_base-c7 && linuxBaseC7
-echo $extra_pkgs | grep -q virtualbox-ose-additions && virtualbox-ose-additions
+echo $extra_pkgs | grep -q virtualbox-ose-additions && enable_virtualbox_ose_additions
 
 # Honestly, shouldn't graphic card configuration be done in the base installer? 
 # Even if X isn't enabled, the right drivers should be selected and installed.
 # Lets handle the 4 major cases, and hope for the best
 
-dialog --title "Graphics Drivers" --yesno "Would you like to try to install the drivers for your video card?\n\nPlease refer to freebsd handbook for more details:\nhttps://www.freebsd.org/doc/handbook/x-config.html" 0 0
-install_dv_drivers=$?
+if is_noninteractive ; then
+	case "${INSTALLX_GRAPHICS:-no}" in
+		[Yy][Ee][Ss]|1|true|TRUE) install_dv_drivers=0 ;;
+		*) install_dv_drivers=1 ;;
+	esac
+else
+	dialog --title "Graphics Drivers" --yesno "Would you like to try to install the drivers for your video card?\n\nPlease refer to freebsd handbook for more details:\nhttps://www.freebsd.org/doc/handbook/x-config.html" 0 0
+	install_dv_drivers=$?
+fi
 
 if [ "$install_dv_drivers" -eq 0  ] ; then 
 
-	card=$(dialog --checklist "Select additional packages to install:" 0 0 0 \
-	i915kms "most Intel graphics cards" off \
-	radeonkms "most OLDER Radeon graphics cards" off \
-	amdgpu "most NEWER AMD graphics cards" off \
-	nvidia "NVidia Graphics Cards" off \
-	vesa 	"Generic driver that may work as a fallback" off \
-	scfb 	"Another Generic diver for UEFI and ARM" off \
-	other "Anything but the above" off \
-	--stdout)
+	if is_noninteractive ; then
+		card="${INSTALLX_VIDEO_CARD:-}"
+	else
+		card=$(dialog --checklist "Select additional packages to install:" 0 0 0 \
+		i915kms "most Intel graphics cards" off \
+		radeonkms "most OLDER Radeon graphics cards" off \
+		amdgpu "most NEWER AMD graphics cards" off \
+		nvidia "NVidia Graphics Cards" off \
+		vesa 	"Generic driver that may work as a fallback" off \
+		scfb 	"Another Generic diver for UEFI and ARM" off \
+		other "Anything but the above" off \
+		--stdout)
+	fi
 
 	case $card in
 		i915kms) 
@@ -359,40 +420,38 @@ if [ "$install_dv_drivers" -eq 0  ] ; then
 			;;
 		*)
 			pciconf=$(pciconf -vl | grep -B3 display)
-			dialog --msgbox "You'll need to check the FreeBSD handbook or forums. The following output may be helpful in finding a driber: pciconf -vl | grep -B3 display: $pciconf" 0 0
+			if ! is_noninteractive ; then
+				dialog --msgbox "You'll need to check the FreeBSD handbook or forums. The following output may be helpful in finding a driber: pciconf -vl | grep -B3 display: $pciconf" 0 0
+			else
+				echo "noninteractive: no known video card selected; pciconf: $pciconf" | tee -a "$LOGFILE"
+			fi
 			;;
 	esac
 
 fi 
 
-# check to see if we should set the user shell to bash
-if ( echo $all_pkgs | grep -q "bash" ) ; then
-	dialog --title "Bash" --yesno "Would you like to set the $VUSER user's default shell to bash?" --stdout 0 0
-	bash_yes=$?
+# This is opt activities — must run before package list is finalized
+if is_noninteractive ; then
+	# Defaults chosen so existing shunit2 checks (fuse, ipfw, minimal footprint) pass in CI
+	opt_activities="${INSTALLX_OPT:-load_card_readers load_atapi load_fuse enable_tmpfs enable_async_io enable_workstation_pwr_mgmnt enable_ipfw_firewall minimal_xorg}"
+	echo "noninteractive: opt_activities=$opt_activities" | tee -a "$LOGFILE"
+else
+	opt_activities=$(dialog --checklist "Select additional options" 0 0 0 \
+		load_card_readers "enable card readers like sd cards" on \
+		load_atapi "enable atapi to enable external storage devices like cds" on \
+		load_fuse "enable userspace fileystems" on \
+		load_coretemp "enable cpu temp sensors for intel (and amd)" off \
+		load_amdtemp "enable additional amd temp sensors" off \
+		enable_tmpfs "enable in-mem tempfs" on \
+		enable_cups "printing" off \
+		enable_webcam "enables webcams to be used" off \
+		enable_ipfw_firewall "enables workstation firewall profile + allow ssh" off \
+		enable_async_io "enable async io for better perf" on \
+		enable_workstation_pwr_mgmnt "change pwr on battery/plugged in" on \
+		load_bluetooth "enable bluetooth kernel modules" off \
+		minimal_xorg "only install minimal xorg packages" off \
+		--stdout )
 fi
-
-# check to see if we should allow %wheel to sudo
-if ( echo $all_pkgs | grep -q "sudo" ) ; then
-	dialog --title "sudo" --yesno "Would you like to make sudo act like the default behavior on linux?\n(wheel group can sudo)" --stdout 0 0
-	sudo_yes=$?
-fi
-
-# This is opt activities
-opt_activities=$(dialog --checklist "Select additional options" 0 0 0 \
-	load_card_readers "enable card readers like sd cards" on \
-	load_atapi "enable atapi to enable external storage devices like cds" on \
-	load_fuse "enable userspace fileystems" on \
-	load_coretemp "enable cpu temp sensors for intel (and amd)" off \
-	load_amdtemp "enable additional amd temp sensors" off \
-	enable_tmpfs "enable in-mem tempfs" on \
-	enable_cups "printing" off \
-	enable_webcam "enables webcams to be used" off \
-	enable_ipfw_firewall "enables workstation firewall profile + allow ssh" off \
-	enable_async_io "enable async io for better perf" on \
-	enable_workstation_pwr_mgmnt "change pwr on battery/plugged in" on \
-	load_bluetooth "enable bluetooth kernel modules" off \
-	minimal_xorg "only install minimal xorg packages" off \
-	--stdout )
 
 #
 # this comment is just to draw attention to
@@ -420,9 +479,42 @@ echo $opt_activities | grep -q minimal_xorg && xorg_pkgs=$xorg_minimal
 
 # this is referred to during the package install, but needs to be up here so we can ask the user things.
 all_pkgs="$xorg_pkgs dbus $DESKTOP_PGKS $extra_pkgs $vc_pkgs $mywm $slim_extra_pkgs"
+
+# check to see if we should set the user shell to bash
+# (moved after all_pkgs is known; previously referenced all_pkgs before it was set)
+if ( echo "$all_pkgs" | grep -q "bash" ) ; then
+	if is_noninteractive ; then
+		case "${INSTALLX_BASH_SHELL:-yes}" in
+			[Nn][Oo]|0|false|FALSE) bash_yes=1 ;;
+			*) bash_yes=0 ;;
+		esac
+	else
+		dialog --title "Bash" --yesno "Would you like to set the $VUSER user's default shell to bash?" --stdout 0 0
+		bash_yes=$?
+	fi
+fi
+
+# check to see if we should allow %wheel to sudo
+if ( echo "$all_pkgs" | grep -q "sudo" ) ; then
+	if is_noninteractive ; then
+		case "${INSTALLX_SUDO_WHEEL:-yes}" in
+			[Nn][Oo]|0|false|FALSE) sudo_yes=1 ;;
+			*) sudo_yes=0 ;;
+		esac
+	else
+		dialog --title "sudo" --yesno "Would you like to make sudo act like the default behavior on linux?\n(wheel group can sudo)" --stdout 0 0
+		sudo_yes=$?
+	fi
+fi
+
 echo "pkg install -y $all_pkgs" | tee -a "$LOGFILE"
 pkg install -y $all_pkgs | tee -a "$LOGFILE"
-report "package installation: " "$?"
+pkg_status=$?
+report "package installation: " "$pkg_status"
+if [ "$pkg_status" -ne 0 ] && is_noninteractive ; then
+	echo "FATAL: package installation failed in noninteractive mode (status=$pkg_status)" | tee -a "$LOGFILE"
+	exit 1
+fi
 
 # post install stuff
 if [ "slim" = $mywm ] ; then
@@ -431,7 +523,7 @@ if [ "slim" = $mywm ] ; then
 fi
 
 # make sudo behave like default linux setup
-if [ "$sudo_yes" -eq 0 ] ; then
+if [ "${sudo_yes:-1}" -eq 0 ] ; then
 	test -e /usr/local/etc/sudoers && echo "%wheel ALL=(ALL) ALL" >> /usr/local/etc/sudoers
 	report "created sudoers for wheel" "$?"
 fi
@@ -444,12 +536,17 @@ if [ $desktop = "mate" ] ; then
 fi
 
 # Set the user's shell to bash
-if [ "$bash_yes" -eq 0 ] ; then
+if [ "${bash_yes:-1}" -eq 0 ] ; then
 	chpass -s /usr/local/bin/bash $VUSER || echo "failed to change shell to bash"
 fi
 
 
 
 welcome="Thanks for trying this setup script. If you're new to FreeBSD, it's worth noting that instead of trying to search google for how to do something, you probably want to check the handbook on freebsd.org or read the built-in man pages. \n\n Doing a 'man -k <topic>' will search for any matching documentation, and unlike some, ahem, other *nix operating systems, FreeBSD's built in documentation is really good.\n\n"
-dialog --msgbox "$welcome Hopefully that worked. You'll probably want to reboot at this point. Please report any problems to http://bug.freebsddesktop.xyz/ or see the installx.log file created" 0 0
+if is_noninteractive ; then
+	echo "$welcome" | tee -a "$LOGFILE"
+	echo "noninteractive install finished. See $LOGFILE and $ERRLOG" | tee -a "$LOGFILE"
+else
+	dialog --msgbox "$welcome Hopefully that worked. You'll probably want to reboot at this point. Please report any problems to http://bug.freebsddesktop.xyz/ or see the installx.log file created" 0 0
+fi
 

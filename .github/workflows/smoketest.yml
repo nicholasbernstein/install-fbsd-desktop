@@ -1,0 +1,147 @@
+# Smoketest FreeBSD desktop installer (installx.sh)
+#
+# Runs on every push/PR and weekly. Boots a FreeBSD VM, drives installx.sh
+# non-interactively with a lightweight desktop (awesome + minimal xorg),
+# then runs the existing shunit2 post-install checks.
+
+name: Smoketest
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # Weekly Monday 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: smoketest-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast static checks on the runner (no FreeBSD VM)
+  lint:
+    name: Shell syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax-check install scripts
+        run: |
+          set -e
+          for f in installx.sh install.sh test_installx.sh; do
+            echo "==> sh -n $f"
+            # bash -n is available on the runner; FreeBSD /bin/sh is ash-like
+            # but bash -n catches most syntax issues in these scripts.
+            bash -n "$f"
+          done
+          echo "syntax OK"
+
+  # Full non-interactive install + shunit2 on FreeBSD
+  smoketest:
+    name: FreeBSD install smoke (${{ matrix.release }})
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep the matrix small for weekly cost; expand as needed
+        release: ["14.3"]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Smoketest installx.sh in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          usesh: true
+          # Package installs need RAM; default is 6144
+          mem: 8192
+          copyback: true
+          prepare: |
+            set -e
+            pkg update -f
+            # dialog is only needed for interactive runs; noninteractive path skips it.
+            # git not required; sources are synced from the runner.
+            pkg install -y pkgconf
+          run: |
+            set -e
+            set -x
+            cd "$GITHUB_WORKSPACE" 2>/dev/null || cd "$(pwd)"
+            freebsd-version
+            uname -a
+
+            # --- test user expected by test_installx.sh ---
+            TESTUSER=nick
+            pw groupadd video 2>/dev/null || true
+            if ! id "$TESTUSER" >/dev/null 2>&1; then
+              pw useradd -n "$TESTUSER" -m -s /bin/sh
+            fi
+            pw groupmod video -m "$TESTUSER" 2>/dev/null || true
+            pw groupmod wheel -m "$TESTUSER" 2>/dev/null || true
+
+            # Ensure config files exist so the script can append to them
+            mkdir -p /boot /etc/pkg
+            touch /boot/loader.conf
+            touch /etc/fstab
+            touch /etc/sysctl.conf
+            # Repo config should already exist on FreeBSD images; keep a guard
+            if [ ! -f /etc/pkg/FreeBSD.conf ]; then
+              echo "WARNING: /etc/pkg/FreeBSD.conf missing" >&2
+            fi
+
+            # --- noninteractive smoketest knobs ---
+            # Lightweight DE + minimal xorg keeps runtime reasonable in CI.
+            # Options include fuse + ipfw so existing shunit2 tests pass.
+            export CI=true
+            export INSTALLX_NONINTERACTIVE=1
+            export ASSUME_ALWAYS_YES=yes
+            export INSTALLX_USER="$TESTUSER"
+            export INSTALLX_DESKTOP=awesome
+            export INSTALLX_ROLLING=yes
+            export INSTALLX_EXTRA_PKGS="bash sudo"
+            export INSTALLX_GRAPHICS=no
+            export INSTALLX_OPT="load_card_readers load_atapi load_fuse enable_tmpfs enable_async_io enable_workstation_pwr_mgmnt enable_ipfw_firewall minimal_xorg"
+            export INSTALLX_BASH_SHELL=yes
+            export INSTALLX_SUDO_WHEEL=yes
+
+            echo "==== Running installx.sh (noninteractive) ===="
+            # Script redirects stderr to installx.err; surface it on failure
+            if ! sh ./installx.sh; then
+              echo "installx.sh failed; dumping logs" >&2
+              tail -n 200 installx.log 2>/dev/null || true
+              tail -n 200 installx.err 2>/dev/null || true
+              exit 1
+            fi
+
+            echo "==== installx.log (tail) ===="
+            tail -n 100 installx.log || true
+
+            echo "==== Running shunit2 post-install tests ===="
+            # shunit2 + test_installx.sh expect to run as root on a configured system
+            if ! sh ./test_installx.sh; then
+              echo "shunit2 tests failed" >&2
+              echo "---- /etc/rc.conf ----"
+              cat /etc/rc.conf || true
+              echo "---- /boot/loader.conf ----"
+              cat /boot/loader.conf || true
+              echo "---- /etc/fstab ----"
+              cat /etc/fstab || true
+              echo "---- groups ----"
+              grep -E 'video|wheel' /etc/group || true
+              exit 1
+            fi
+
+            echo "==== Smoketest passed ===="
+
+      - name: Upload install logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installx-logs-${{ matrix.release }}
+          path: |
+            installx.log
+            installx.err
+          if-no-files-found: ignore
