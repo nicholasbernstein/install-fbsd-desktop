@@ -74,7 +74,8 @@ jobs:
     name: Dialog UI (FreeBSD + expect)
     needs: lint
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # VM boot + pkg install + short UI smokes; must not approach 30m hangs
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -96,9 +97,12 @@ jobs:
             cd "$GITHUB_WORKSPACE" 2>/dev/null || cd "$(pwd)"
             export TERM=xterm
             which cdialog
-            sh scripts/test-dialog-ui.sh
-            # Single expect run (welcome + Ctrl+C) — not duplicated on Linux
-            script -q /dev/null expect -f scripts/test-dialog-expect.exp
+            which timeout || true
+            # Widget smoke (each step wall-clock limited inside the script)
+            timeout 60 sh scripts/test-dialog-ui.sh
+            # Single expect run (welcome + Ctrl+C) — outer limit so we never hang the job
+            timeout 120 script -q /dev/null expect -f scripts/test-dialog-expect.exp
+            echo "dialog-ui-freebsd: PASS"
 
   # -------------------------------------------------------------------------
   # Desktop smokes — each reusable job expands across supported FreeBSD releases

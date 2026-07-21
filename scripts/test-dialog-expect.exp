@@ -1,14 +1,13 @@
 #!/usr/bin/env expect -f
-# Drive installx.sh interactive startup far enough to prove menus work,
-# then abort with Ctrl+C before package install.
+# Drive installx.sh interactive startup far enough to prove cdialog menus work,
+# then abort with Ctrl+C before a full install.
 #
-# Usage (from repo root):
-#   expect scripts/test-dialog-expect.exp
+# Usage (from repo root, ideally under a PTY):
+#   script -q /dev/null expect -f scripts/test-dialog-expect.exp
 #
 # Requires: expect, cdialog (installx will pkg-install it if missing), a TTY
-# (use script(1) wrapper in CI)
 
-set timeout 180
+set timeout 90
 set env(TERM) "xterm"
 # Force interactive path
 catch {unset env(CI)}
@@ -20,8 +19,10 @@ set root [file dirname [file dirname [file normalize $argv0]]]
 cd $root
 
 puts "expect: spawning installx.sh from $root"
-# Use unbuffered-ish spawn; installx logs to installx.log as well
+log_user 1
 spawn /bin/sh ./installx.sh
+set pid [exp_pid]
+puts "expect: spawn pid=$pid"
 
 # installx may first print "installing cdialog…", then interactive banner / welcome
 expect {
@@ -34,6 +35,7 @@ expect {
 	timeout {
 		puts "FAIL: timed out waiting for installx startup"
 		catch {exp_send "\x03"}
+		catch {exec kill -9 $pid}
 		exit 1
 	}
 	eof {
@@ -42,13 +44,18 @@ expect {
 	}
 }
 
-# Enter to dismiss welcome (if still up)
+# Dismiss welcome (and any immediate follow-on box) with Enter a few times
 sleep 1
-send "\r"
+for {set i 0} {$i < 3} {incr i} {
+	send "\r"
+	sleep 0.4
+}
 
-# After welcome we expect package catalog progress or next dialog
+# After welcome we expect package catalog progress, branch prompt, or next dialog.
+# ncurses often hides text; treat timeout as soft and still abort cleanly.
+set timeout 60
 expect {
-	-re {catalog|Updating|Package|gauge|Rolling|latest|quarterly|validating|Checking|Select Desktop|desktop} {
+	-re {catalog|Updating|Package|gauge|programbox|Rolling|latest|quarterly|validating|Checking|Select Desktop|desktop|Yes|No} {
 		puts "expect: saw post-welcome activity"
 	}
 	-re {installx:} {
@@ -63,10 +70,14 @@ expect {
 	}
 }
 
-# Abort the full installer before it goes too far
+# Abort before a full install. Send Ctrl+C a few times; then SIGTERM/SIGKILL.
 puts "expect: sending Ctrl+C to abort"
-send "\x03"
+for {set i 0} {$i < 3} {incr i} {
+	send "\x03"
+	sleep 0.3
+}
 
+set timeout 10
 expect {
 	-re {Ctrl\+C|exiting|signal|caught} {
 		puts "expect: saw abort message"
@@ -75,24 +86,32 @@ expect {
 		puts "expect: process ended after Ctrl+C"
 	}
 	timeout {
-		puts "WARN: no abort message; killing spawn id"
-		catch {exec kill -9 [exp_pid]}
+		puts "WARN: no abort message; escalating kill"
+		catch {exec kill -TERM $pid}
+		sleep 1
+		catch {exec kill -9 $pid}
 	}
 }
 
 # Allow clean teardown
-set timeout 15
+set timeout 8
 expect {
 	eof { }
-	timeout { catch {exec kill -9 [exp_pid]} }
+	timeout {
+		catch {exec kill -9 $pid}
+		expect eof
+	}
 }
 
 set code [wait]
-# wait returns a list: pid spawn_id os_error value
-# value 130 or non-zero from SIGINT is OK
-set status [lindex $code 3]
+# wait returns: pid spawn_id os_error value  (or more elements with -i)
+set status 0
+if {[llength $code] >= 4} {
+	set status [lindex $code 3]
+}
 puts "expect: child status=$status"
-if {$status == 0 || $status == 130 || $status == 1 || $status > 128} {
+# 0, Cancel, SIGINT(130), or any signal-ish high status is OK for this smoke
+if {$status == 0 || $status == 130 || $status == 1 || $status > 128 || $status == 255} {
 	puts "PASS: expect dialog interaction smoke"
 	exit 0
 }
