@@ -31,21 +31,18 @@ if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ] || [ "$TERM" = "unknown" ] ; then
 fi
 echo "    TERM=$TERM"
 
-# Prefer a pseudo-tty when available (script(1) on FreeBSD/Linux)
+# Prefer a pseudo-tty when available.
+# FreeBSD script(1): script -q /dev/null cmd args... (preserves argv)
+# GNU script(1):     script -q -c 'cmd' /dev/null — joining args with "$*"
+# destroys quoting (parentheses, spaces), so do NOT use it for multi-arg
+# dialog invocations. Run dialog directly on Linux instead.
 run_with_tty() {
 	if command -v script >/dev/null 2>&1 ; then
-		# FreeBSD: script -q /dev/null cmd
-		# GNU:     script -q -c 'cmd' /dev/null
 		if script -q /dev/null true >/dev/null 2>&1 ; then
 			script -q /dev/null "$@"
 			return $?
 		fi
-		if script -q -c "true" /dev/null >/dev/null 2>&1 ; then
-			script -q -c "$*" /dev/null
-			return $?
-		fi
 	fi
-	# Fallback: run directly
 	"$@"
 }
 
@@ -54,7 +51,7 @@ if ! run_with_tty "$DIALOG_BIN" --timeout 2 --title "installx-test" \
 	--msgbox "UI smoke test — auto-closes in 2s." 8 50 ; then
 	_rc=$?
 	# Some builds return 255 on timeout; treat 0/255 as success for timeout dismiss
-	if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 255 ] && [ "$_rc" -ne 1 ] ; then
+	if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 255 ] && [ "$_rc" -ne 1 ] && [ "$_rc" -ne 4 ] ; then
 		echo "FAIL: msgbox --timeout failed (exit $_rc)" >&2
 		exit 1
 	fi
@@ -65,8 +62,8 @@ echo "==> yesno with timeout"
 if ! run_with_tty "$DIALOG_BIN" --timeout 2 --title "installx-test" \
 	--yesno "Timeout test (auto)." 7 40 ; then
 	_rc=$?
-	# timeout / no are acceptable for smoke
-	if [ "$_rc" -gt 255 ] ; then
+	# timeout / no / cancel are acceptable for smoke
+	if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 1 ] && [ "$_rc" -ne 255 ] && [ "$_rc" -ne 4 ] ; then
 		echo "FAIL: yesno unexpected exit $_rc" >&2
 		exit 1
 	fi
@@ -81,7 +78,7 @@ if ! run_with_tty "$DIALOG_BIN" --timeout 2 --title "installx-test" \
 	"Quit" "Exit" \
 	--stdout >/tmp/installx-dialog-menu.out 2>/tmp/installx-dialog-menu.err ; then
 	_rc=$?
-	if [ "$_rc" -gt 255 ] ; then
+	if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 1 ] && [ "$_rc" -ne 255 ] && [ "$_rc" -ne 4 ] ; then
 		echo "FAIL: menu unexpected exit $_rc" >&2
 		cat /tmp/installx-dialog-menu.err >&2 || true
 		exit 1

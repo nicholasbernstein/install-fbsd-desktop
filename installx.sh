@@ -415,6 +415,7 @@ default_prefer_latest_packages() {
 	if pkg_is_available xorg || pkg_is_available xorg-minimal ; then
 		if ! pkg_is_available kde \
 			&& ! pkg_is_available plasma6-plasma \
+			&& ! pkg_is_available plasma6-plasma-desktop \
 			&& ! pkg_is_available gnome \
 			&& ! pkg_is_available xfce ; then
 			echo "pkg: quarterly desktop catalog looks sparse on $_ver — prefer latest" | tee -a "$LOGFILE"
@@ -482,21 +483,68 @@ if ( uname -r | grep -q "^11" ) ; then
 	pwd_mkdb -p /etc/master.passwd
 fi
 
+# Resolve KDE/Plasma package set for this ABI/catalog.
+# Prefer meta ports (kde, plasma6-plasma). On some FreeBSD 15.x catalogs the
+# metas are missing while individual plasma6-* packages exist — use a
+# component fallback so KDE stays installable. Echo empty if nothing usable.
 kde_desktop_pkgs() {
 	if pkg_is_available kde ; then
 		echo "kde"
-	elif pkg_is_available plasma6-plasma ; then
-		echo "plasma6-plasma konsole"
-	elif pkg_is_available plasma5-plasma ; then
-		echo "plasma5-plasma"
-	else
-		echo "kde"
+		return 0
 	fi
+	if pkg_is_available plasma6-plasma ; then
+		# Handbook-style minimal Plasma 6 meta
+		if pkg_is_available konsole ; then
+			echo "plasma6-plasma konsole"
+		else
+			echo "plasma6-plasma"
+		fi
+		return 0
+	fi
+	if pkg_is_available plasma5-plasma ; then
+		echo "plasma5-plasma"
+		return 0
+	fi
+	# Component fallback (metas absent; pieces present — common on early 15.x)
+	if pkg_is_available plasma6-plasma-desktop ; then
+		_kde_fb="plasma6-plasma-desktop"
+		for _kp in \
+			plasma6-plasma-workspace \
+			plasma6-systemsettings \
+			plasma6-breeze \
+			plasma6-kwin-x11 \
+			plasma6-plasma-pa \
+			plasma6-kmenuedit \
+			plasma6-kscreen \
+			plasma6-kinfocenter \
+			plasma6-kde-cli-tools \
+			konsole \
+			dolphin \
+			kde-baseapps
+		do
+			if pkg_is_available "$_kp" ; then
+				_kde_fb="${_kde_fb} ${_kp}"
+			fi
+		done
+		echo "$_kde_fb"
+		return 0
+	fi
+	# Nothing installable for KDE on this catalog
+	echo ""
+	return 1
 }
 
 desktop_required_pkgs() {
 	case $(echo "$1" | tr '[:upper:]' '[:lower:]') in
-		kde) echo "$(kde_desktop_pkgs) sddm dbus xorg" ;;
+		kde)
+			_kp=$(kde_desktop_pkgs)
+			if [ -z "$_kp" ] ; then
+				# Force validation failure when no KDE set exists
+				echo "kde"
+			else
+				echo "$_kp sddm dbus xorg"
+			fi
+			;;
 		gnome) echo "gnome gdm dbus" ;;
 		xfce4|xfce) echo "xfce sddm dbus xorg" ;;
 		mate) echo "mate sddm dbus xorg" ;;
@@ -815,6 +863,12 @@ case $desktop_key in
       XINIT_CMD="startplasma-x11"
       DESKTOP_PKGS=$(kde_desktop_pkgs)
       DISPLAY_MGR="sddm"
+      if [ -z "$DESKTOP_PKGS" ] ; then
+          echo "FATAL: KDE/Plasma packages not available in the current pkg catalog." | tee -a "$LOGFILE"
+          echo "FATAL: need one of: kde, plasma6-plasma, or plasma6-plasma-desktop (+ components)." | tee -a "$LOGFILE"
+          exit 1
+      fi
+      echo "kde: using packages: $DESKTOP_PKGS" | tee -a "$LOGFILE"
       ;;
   windowmaker)
       XINIT_CMD="/usr/local/bin/wmaker"
@@ -1487,10 +1541,9 @@ esac
 all_pkgs="$display_stack dbus $DESKTOP_PKGS $extra_pkgs $vc_pkgs $dm_pkgs $slim_extra_pkgs $audio_pkgs"
 all_pkgs=$(echo "$all_pkgs" | tr -s ' ')
 
-# Required set must still be fully available (desktop + display stack + DM)
-_required_final=$(desktop_required_pkgs "$desktop_key")
-# Also require whatever we put in DESKTOP_PKGS / display stack / dm
-_required_final="$_required_final $DESKTOP_PKGS $display_stack $dm_pkgs dbus"
+# Required set: desktop package set + display stack + DM + dbus (no double-count)
+_required_final="$DESKTOP_PKGS $display_stack $dm_pkgs dbus"
+_required_final=$(echo "$_required_final" | tr -s ' ')
 if ! pkgs_find_missing $_required_final ; then
 	echo "FATAL: required packages missing from catalog before install: $MISSING_PKGS" | tee -a "$LOGFILE"
 	echo "FATAL: desktop=$desktop_key all_pkgs would have been: $all_pkgs" | tee -a "$LOGFILE"
