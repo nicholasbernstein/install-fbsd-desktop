@@ -50,26 +50,8 @@ jobs:
           python3 scripts/freebsd-supported-releases.py --pin 14.4 --github-matrix
 
   # -------------------------------------------------------------------------
-  # cdialog UI smoke (Linux dialog package + FreeBSD cdialog + expect)
+  # FreeBSD cdialog UI smoke (widgets + one expect interactive run)
   # -------------------------------------------------------------------------
-  dialog-ui-linux:
-    name: Dialog UI (Linux widgets)
-    needs: lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dialog (ComeOn Dialog / cdialog family)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq dialog
-
-      - name: Timeout-based cdialog-family widgets
-        run: |
-          export TERM=xterm
-          sh scripts/test-dialog-ui.sh
-
-  # One expect-driven interactive smoke (FreeBSD + cdialog — matches real installs)
   dialog-ui-freebsd:
     name: Dialog UI (FreeBSD + expect)
     needs: lint
@@ -97,7 +79,7 @@ jobs:
             cd "$GITHUB_WORKSPACE" 2>/dev/null || cd "$(pwd)"
             export TERM=xterm
             which cdialog
-            which timeout || true
+            which timeout
             # Widget smoke (each step wall-clock limited inside the script)
             timeout 60 sh scripts/test-dialog-ui.sh
             # Single expect run (welcome + Ctrl+C) — outer limit so we never hang the job

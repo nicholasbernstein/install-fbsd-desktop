@@ -1,27 +1,26 @@
 #!/bin/sh
-# Smoke-test cdialog the way installx.sh resolves it.
-# Run on Linux (CI: apt dialog binary) or FreeBSD (pkg cdialog). Exit 0 on success.
+# Smoke-test cdialog widgets the way installx.sh uses them on FreeBSD.
+# Exit 0 on success.
 #
-# Usage:
+# Usage (FreeBSD):
 #   sh scripts/test-dialog-ui.sh
 #
-# Every widget is wrapped in a hard wall-clock timeout so CI cannot hang.
+# Requires: cdialog, timeout(1). Every widget has a hard wall-clock limit
+# so CI cannot hang (programbox waits for OK after EOF — we use progressbox).
 
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
-echo "==> resolve UI binary (cdialog preferred; dialog accepted for Linux CI)"
+echo "==> resolve cdialog"
 DIALOG_BIN=""
 PATH="${PATH}:/usr/local/bin"
 export PATH
 if command -v cdialog >/dev/null 2>&1 ; then
 	DIALOG_BIN=$(command -v cdialog)
-elif command -v dialog >/dev/null 2>&1 ; then
-	DIALOG_BIN=$(command -v dialog)
 else
-	echo "FAIL: neither cdialog nor dialog found in PATH" >&2
+	echo "FAIL: cdialog not found (pkg install cdialog)" >&2
 	exit 1
 fi
 echo "    using: $DIALOG_BIN"
@@ -32,36 +31,17 @@ if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ] || [ "$TERM" = "unknown" ] ; then
 fi
 echo "    TERM=$TERM"
 
-# FreeBSD script(1): script -q /dev/null cmd args... (real PTY, preserves argv).
-# GNU script: FreeBSD form hangs or misparses — never use it on Linux.
-# Detect by OS, not by probing (probe hangs under GNU script).
-SCRIPT_PTY=0
-case "$(uname -s 2>/dev/null)" in
-	FreeBSD|DragonFly)
-		if command -v script >/dev/null 2>&1 ; then
-			SCRIPT_PTY=1
-		fi
-		;;
-esac
-echo "    SCRIPT_PTY=$SCRIPT_PTY (uname=$(uname -s 2>/dev/null || echo unknown))"
+if ! command -v timeout >/dev/null 2>&1 ; then
+	echo "FAIL: timeout(1) required for UI smoke" >&2
+	exit 1
+fi
 
-# timeout(1) wraps real binaries only (not shell functions).
+# FreeBSD: script -q /dev/null cmd args… allocates a PTY and preserves argv.
+# timeout wraps the real binary (not a shell function).
 run_dialog() {
 	_limit="${1:-10}"
 	shift
-	if command -v timeout >/dev/null 2>&1 ; then
-		if [ "$SCRIPT_PTY" -eq 1 ] ; then
-			timeout "$_limit" script -q /dev/null "$DIALOG_BIN" "$@"
-			return $?
-		fi
-		timeout "$_limit" "$DIALOG_BIN" "$@"
-		return $?
-	fi
-	if [ "$SCRIPT_PTY" -eq 1 ] ; then
-		script -q /dev/null "$DIALOG_BIN" "$@"
-		return $?
-	fi
-	"$DIALOG_BIN" "$@"
+	timeout "$_limit" script -q /dev/null "$DIALOG_BIN" "$@"
 }
 
 # Accept timeout/cancel/esc/success for smoke dismissals
@@ -123,11 +103,7 @@ fi
 echo "    progressbox OK (rc=$_rc)"
 
 echo "==> installx.sh syntax still valid"
-if command -v bash >/dev/null 2>&1 ; then
-	bash -n "$ROOT/installx.sh"
-else
-	sh -n "$ROOT/installx.sh"
-fi
+sh -n "$ROOT/installx.sh"
 
 echo "PASS: cdialog UI smoke tests"
 exit 0
