@@ -5,7 +5,8 @@
 # Usage (from repo root):
 #   expect scripts/test-dialog-expect.exp
 #
-# Requires: expect, dialog or bsddialog, a TTY (use script(1) wrapper in CI)
+# Requires: expect, cdialog (installx will pkg-install it if missing), a TTY
+# (use script(1) wrapper in CI)
 
 set timeout 180
 set env(TERM) "xterm"
@@ -22,9 +23,9 @@ puts "expect: spawning installx.sh from $root"
 # Use unbuffered-ish spawn; installx logs to installx.log as well
 spawn /bin/sh ./installx.sh
 
-# installx prints a line before/around the welcome dialog
+# installx may first print "installing cdialog…", then interactive banner / welcome
 expect {
-	-re {interactive mode|installx:} {
+	-re {installing cdialog|cdialog ready|interactive mode|installx:} {
 		puts "expect: saw installx console banner"
 	}
 	-re {Welcome|install-fbsd-desktop|guide you through} {

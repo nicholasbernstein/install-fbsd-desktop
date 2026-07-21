@@ -10,9 +10,9 @@ WWW=		https://github.com/nicholasbernstein/install-fbsd-desktop
 LICENSE=	BSD3CLAUSE
 LICENSE_FILE=	${WRKSRC}/license.txt
 
-# Interactive menus use dialog(1) or base bsddialog(1). FreeBSD 13+ ships
-# bsddialog in base; misc/dialog is optional when base UI is present.
-# No hard RUN_DEPENDS so the port installs cleanly on systems with only bsddialog.
+# Interactive menus require cdialog (ComeOn Dialog). installx.sh will also
+# pkg-install it on first interactive run if missing.
+RUN_DEPENDS=	cdialog:devel/cdialog
 
 NO_ARCH=	yes
 NO_BUILD=	yes

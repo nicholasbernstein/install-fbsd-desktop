@@ -50,7 +50,7 @@ jobs:
           python3 scripts/freebsd-supported-releases.py --pin 14.4 --github-matrix
 
   # -------------------------------------------------------------------------
-  # Dialog / bsddialog UI smoke (Linux dialog + FreeBSD bsddialog + expect)
+  # cdialog UI smoke (Linux dialog package + FreeBSD cdialog + expect)
   # -------------------------------------------------------------------------
   dialog-ui-linux:
     name: Dialog UI (Linux widgets)
@@ -59,17 +59,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dialog
+      - name: Install dialog (ComeOn Dialog / cdialog family)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq dialog
 
-      - name: Timeout-based dialog widgets
+      - name: Timeout-based cdialog-family widgets
         run: |
           export TERM=xterm
           sh scripts/test-dialog-ui.sh
 
-  # One expect-driven interactive smoke (FreeBSD + bsddialog — matches real installs)
+  # One expect-driven interactive smoke (FreeBSD + cdialog — matches real installs)
   dialog-ui-freebsd:
     name: Dialog UI (FreeBSD + expect)
     needs: lint
@@ -78,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: bsddialog widgets + expect on FreeBSD VM
+      - name: cdialog widgets + expect on FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         with:
           release: "14.4"
@@ -89,13 +89,13 @@ jobs:
             export ASSUME_ALWAYS_YES=yes
             export IGNORE_OSVERSION=yes
             pkg update -f
-            pkg install -y expect
+            pkg install -y expect cdialog
           run: |
             set -e
             set -x
             cd "$GITHUB_WORKSPACE" 2>/dev/null || cd "$(pwd)"
             export TERM=xterm
-            which bsddialog || which dialog
+            which cdialog
             sh scripts/test-dialog-ui.sh
             # Single expect run (welcome + Ctrl+C) — not duplicated on Linux
             script -q /dev/null expect -f scripts/test-dialog-expect.exp

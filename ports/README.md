@@ -65,6 +65,6 @@ Commit the updated `distinfo` whenever `GH_TAGNAME` / `DISTVERSION` changes.
 
 ## Runtime dependency
 
-- `misc/dialog` — interactive menus (`pkg install dialog`)
+- `devel/cdialog` — interactive menus (`pkg install cdialog`)
 
 `pkg`, `sysrc`, and `pw` come from FreeBSD base.

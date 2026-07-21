@@ -1,6 +1,6 @@
 #!/bin/sh
-# Smoke-test dialog / bsddialog the way installx.sh resolves them.
-# Run on Linux (CI) or FreeBSD. Exit 0 on success.
+# Smoke-test cdialog the way installx.sh resolves it.
+# Run on Linux (CI: apt dialog binary) or FreeBSD (pkg cdialog). Exit 0 on success.
 #
 # Usage:
 #   sh scripts/test-dialog-ui.sh
@@ -10,14 +10,17 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
-echo "==> resolve dialog binary (same preference as installx.sh)"
+echo "==> resolve UI binary (cdialog preferred; dialog accepted for Linux CI)"
 DIALOG_BIN=""
-if command -v bsddialog >/dev/null 2>&1 ; then
-	DIALOG_BIN=$(command -v bsddialog)
+PATH="${PATH}:/usr/local/bin"
+export PATH
+if command -v cdialog >/dev/null 2>&1 ; then
+	DIALOG_BIN=$(command -v cdialog)
 elif command -v dialog >/dev/null 2>&1 ; then
+	# Linux package "dialog" is ComeOn Dialog! (same family as FreeBSD cdialog)
 	DIALOG_BIN=$(command -v dialog)
 else
-	echo "FAIL: neither bsddialog nor dialog found in PATH" >&2
+	echo "FAIL: neither cdialog nor dialog found in PATH" >&2
 	exit 1
 fi
 echo "    using: $DIALOG_BIN"
@@ -34,7 +37,7 @@ run_with_tty() {
 		# FreeBSD: script -q /dev/null cmd
 		# GNU:     script -q -c 'cmd' /dev/null
 		if script -q /dev/null true >/dev/null 2>&1 ; then
-			script -q /dev/null "$@" 
+			script -q /dev/null "$@"
 			return $?
 		fi
 		if script -q -c "true" /dev/null >/dev/null 2>&1 ; then
@@ -47,7 +50,6 @@ run_with_tty() {
 }
 
 echo "==> msgbox with timeout (auto-dismiss)"
-# dialog(1) and bsddialog both support --timeout on modern versions
 if ! run_with_tty "$DIALOG_BIN" --timeout 2 --title "installx-test" \
 	--msgbox "UI smoke test — auto-closes in 2s." 8 50 ; then
 	_rc=$?
@@ -87,16 +89,15 @@ if ! run_with_tty "$DIALOG_BIN" --timeout 2 --title "installx-test" \
 fi
 echo "    menu OK"
 
-echo "==> gauge brief pulse"
+echo "==> programbox brief stream"
 (
-	printf '%s\n' "XXX" "CI gauge smoke…" "XXX" "10"
-	sleep 0.3 2>/dev/null || sleep 1
-	printf '%s\n' "XXX" "CI gauge smoke…" "XXX" "50"
-	sleep 0.3 2>/dev/null || sleep 1
-	printf '%s\n' "XXX" "Done" "XXX" "100"
-) | run_with_tty "$DIALOG_BIN" --title "installx-test" --gauge "Progress" 10 50 0 \
+	echo "line one"
+	sleep 0.2 2>/dev/null || sleep 1
+	echo "line two"
+	echo "done"
+) | run_with_tty "$DIALOG_BIN" --title "installx-test" --programbox 12 50 \
 	|| true
-echo "    gauge OK"
+echo "    programbox OK"
 
 echo "==> installx.sh syntax still valid"
 if command -v bash >/dev/null 2>&1 ; then
@@ -105,5 +106,5 @@ else
 	sh -n "$ROOT/installx.sh"
 fi
 
-echo "PASS: dialog UI smoke tests"
+echo "PASS: cdialog UI smoke tests"
 exit 0

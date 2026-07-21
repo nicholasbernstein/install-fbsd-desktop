@@ -37,43 +37,58 @@ is_noninteractive() {
 	[ "${INSTALLX_NONINTERACTIVE:-0}" = "1" ] || [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ]
 }
 
-# UI helper: FreeBSD 13+ ships bsddialog(1) in base (preferred on console).
-# Classic dialog(1) is misc/dialog from ports and is optional.
+# UI: always use cdialog (devel/cdialog). Base bsddialog is intentionally
+# not used — its gauge/programbox behaviour differs enough to break this UI.
+# If cdialog is missing we print a clear message and pkg-install it first.
 DIALOG_BIN=""
 resolve_dialog_bin() {
-	# Force pkg bootstrap silently to prevent invisible [y/N] prompts from hanging the script
+	# Ensure /usr/local/bin is searchable after a fresh pkg install
+	PATH="${PATH}:/usr/local/bin"
+	export PATH
+
+	# Force pkg bootstrap silently to prevent invisible [y/N] prompts from hanging
 	export ASSUME_ALWAYS_YES=yes
 	if [ -x /usr/sbin/pkg ] && ! command -v pkg >/dev/null 2>&1 ; then
 		env ASSUME_ALWAYS_YES=yes /usr/sbin/pkg bootstrap -y >/dev/null 2>&1 || true
 	fi
 
-	# Prefer base bsddialog on FreeBSD — more reliable on vt(4) / VirtualBox
-	if command -v bsddialog >/dev/null 2>&1 ; then
-		DIALOG_BIN=$(command -v bsddialog)
+	if command -v cdialog >/dev/null 2>&1 ; then
+		DIALOG_BIN=$(command -v cdialog)
+		echo "installx: using cdialog ($DIALOG_BIN)" >> "$LOGFILE"
 		return 0
 	fi
-	if command -v dialog >/dev/null 2>&1 ; then
-		DIALOG_BIN=$(command -v dialog)
+
+	if ! command -v pkg >/dev/null 2>&1 ; then
+		echo "error: pkg not available; cannot install cdialog" >&2
+		return 1
+	fi
+
+	echo "installx: installing cdialog…" | tee -a "$LOGFILE"
+	if ! env ASSUME_ALWAYS_YES=yes pkg install -y cdialog >>"$LOGFILE" 2>&1 ; then
+		# Origin form if the short name is unavailable in this catalog
+		if ! env ASSUME_ALWAYS_YES=yes pkg install -y devel/cdialog >>"$LOGFILE" 2>&1 ; then
+			echo "error: failed to install cdialog (see $LOGFILE)" >&2
+			return 1
+		fi
+	fi
+
+	# Refresh PATH in case pkg just dropped the binary into /usr/local/bin
+	PATH="${PATH}:/usr/local/bin"
+	export PATH
+	hash -r 2>/dev/null || true
+
+	if command -v cdialog >/dev/null 2>&1 ; then
+		DIALOG_BIN=$(command -v cdialog)
+		echo "installx: cdialog ready ($DIALOG_BIN)" | tee -a "$LOGFILE"
 		return 0
 	fi
-	if command -v pkg >/dev/null 2>&1 ; then
-		echo "installx: no bsddialog/dialog found; trying pkg install misc/dialog …" | tee -a "$LOGFILE"
-		env ASSUME_ALWAYS_YES=yes pkg install -y misc/dialog 2>/dev/null \
-			|| env ASSUME_ALWAYS_YES=yes pkg install -y dialog 2>/dev/null || true
-	fi
-	if command -v bsddialog >/dev/null 2>&1 ; then
-		DIALOG_BIN=$(command -v bsddialog)
-		return 0
-	fi
-	if command -v dialog >/dev/null 2>&1 ; then
-		DIALOG_BIN=$(command -v dialog)
-		return 0
-	fi
+
+	echo "error: cdialog installed but not found in PATH=$PATH" >&2
 	return 1
 }
 
 # Child PIDs for long-running background work (pkg update, etc.). Do NOT
-# background dialog/bsddialog — that causes SIGTTOU suspend on exit (hang).
+# background cdialog — that causes SIGTTOU suspend on exit (hang).
 INSTALLX_CHILD_PID=""
 
 installx_kill_pid() {
@@ -107,7 +122,7 @@ trap 'installx_abort HUP' HUP
 # Run a long non-UI command in the background so Ctrl+C hits our trap.
 # Usage: installx_run_interruptible cmd [args...]
 # Sets $INSTALLX_RUN_RC to the child's exit status.
-# Never use this for dialog/bsddialog (ncurses must run in the foreground).
+# Never use this for cdialog (ncurses must run in the foreground).
 installx_run_interruptible() {
 	"$@" &
 	INSTALLX_CHILD_PID=$!
@@ -147,19 +162,19 @@ installx_pkg_update_with_progress() {
 	return "${INSTALLX_RUN_RC}"
 }
 
-# Wrapper: rest of script keeps calling dialog …
+# Wrapper: rest of script keeps calling dialog … which invokes cdialog.
 # Must run in the FOREGROUND. Backgrounding ncurses causes SIGTTOU on
 # tcsetattr at exit, which suspends the process and makes wait hang forever.
 dialog() {
 	if [ -z "$DIALOG_BIN" ] ; then
-		echo "error: dialog UI not available" >&2
+		echo "error: cdialog UI not available" >&2
 		return 127
 	fi
 	if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ] || [ "$TERM" = "unknown" ] ; then
 		export TERM=xterm
 	fi
 
-	# Protect against piped execution and background SIGTTOU: force dialog
+	# Protect against piped execution and background SIGTTOU: force cdialog
 	# to read the interactive keyboard natively from the terminal.
 	if [ -c /dev/tty ] ; then
 		"$DIALOG_BIN" "$@" < /dev/tty
@@ -169,7 +184,7 @@ dialog() {
 	return $?
 }
 
-# dialog/bsddialog draw UI on stderr. Only steal stderr in noninteractive mode.
+# cdialog draws UI on stderr. Only steal stderr in noninteractive mode.
 if is_noninteractive ; then
 	export ASSUME_ALWAYS_YES=yes
 	export IGNORE_OSVERSION="${IGNORE_OSVERSION:-yes}"
@@ -181,16 +196,13 @@ else
 	# Ctrl+C = INTR on this tty
 	stty isig 2>/dev/null || true
 	stty intr '^C' 2>/dev/null || true
-	
+
+	echo "installx: interactive mode (log: $LOGFILE)" | tee -a "$LOGFILE"
 	if ! resolve_dialog_bin ; then
-		echo "error: need bsddialog (base) or dialog (pkg install misc/dialog)." >&2
+		echo "error: need cdialog (pkg install cdialog)." >&2
 		echo "  Or: INSTALLX_NONINTERACTIVE=1 INSTALLX_DESKTOP=... $0" >&2
 		exit 1
 	fi
-	
-	# Welcome is shown later, immediately before the first progress gauge,
-	# so OK is never followed by a silent pause.
-	echo "installx: interactive mode (log: $LOGFILE)" | tee -a "$LOGFILE"
 fi
 
 grep -q "kern.vty" /boot/loader.conf || echo "kern.vty=vt" >> /boot/loader.conf
@@ -353,8 +365,8 @@ You can cancel a screen with Esc, quit from the desktop menu, or press Ctrl+C to
 	if [ "$_drc" -ge 128 ] ; then
 		installx_abort INT
 	fi
-	# Cancel/ESC: dialog=1/255, bsddialog Cancel=1 ESC=5
-	if [ "$_drc" -eq 1 ] || [ "$_drc" -eq 5 ] || [ "$_drc" -eq 255 ] ; then
+	# Cancel/ESC: cdialog Cancel=1, ESC=255
+	if [ "$_drc" -eq 1 ] || [ "$_drc" -eq 255 ] ; then
 		echo "installx: cancelled at welcome screen." | tee -a "$LOGFILE"
 		exit 0
 	fi
