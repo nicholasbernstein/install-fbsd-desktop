@@ -41,7 +41,7 @@ One menu lists desktops and compositors together. You pick what you want;
 | Choice | Session | Notes |
 |--------|---------|--------|
 | KDE, GNOME, Xfce4, MATE, Cinnamon, LXQt, LXDE, WindowMaker, awesome | X11 | xorg + sddm (gdm for GNOME) |
-| Sway, Hyprland | Wayland | wayland + seatd + xwayland; **SDDM** graphical greeter; `~/start-desktop.sh` for CLI |
+| Sway, Hyprland | Wayland | wayland + seatd + xwayland; ly greeter; `~/start-desktop.sh` for CLI |
 
 Wayland installs also write `~/start-desktop.sh` and enable `seatd`.
 

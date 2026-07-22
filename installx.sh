@@ -553,10 +553,8 @@ desktop_required_pkgs() {
 		lxde) echo "lxde-meta lxde-common sddm dbus xorg" ;;
 		windowmaker) echo "windowmaker wmakerconf sddm dbus xorg" ;;
 		awesome) echo "awesome sddm dbus xorg" ;;
-		# SDDM is a simple graphical greeter (X11 greeter that can launch Wayland sessions).
-		# FreeBSD has no well-supported pure-Wayland greeter; ly is TUI-only.
-		sway) echo "sway swayidle swaylock-effects alacritty waybar wayland seatd xwayland sddm dbus" ;;
-		hyprland) echo "hyprland alacritty wayland seatd xwayland sddm dbus" ;;
+		sway) echo "sway swayidle swaylock-effects alacritty waybar wayland seatd xwayland ly dbus" ;;
+		hyprland) echo "hyprland alacritty wayland seatd xwayland ly dbus" ;;
 		*) echo "" ;;
 	esac
 }
@@ -1115,9 +1113,7 @@ EOT
       SESSION_TYPE="wayland"
       NEED_XORG="no"
       SEATD_NEEDED="yes"
-      # Graphical greeter: SDDM (simple, same as most X11 desktops here).
-      # FreeBSD handbook notes pure Wayland greeters are immature; ly is TUI-only.
-      DISPLAY_MGR="sddm"
+      DISPLAY_MGR="ly"
       WAYLAND_COMPOSITOR="sway"
       DESKTOP_PKGS="sway swayidle swaylock-effects alacritty waybar"
       XINIT_CMD=""
@@ -1126,7 +1122,7 @@ EOT
       SESSION_TYPE="wayland"
       NEED_XORG="no"
       SEATD_NEEDED="yes"
-      DISPLAY_MGR="sddm"
+      DISPLAY_MGR="ly"
       WAYLAND_COMPOSITOR="hyprland"
       DESKTOP_PKGS="hyprland alacritty"
       XINIT_CMD=""
@@ -1714,23 +1710,13 @@ echo "$opt_activities" | grep -q enable_workstation_pwr_mgmnt && enable_workstat
 echo "$opt_activities" | grep -q enable_cups && enable_cups
 echo "$opt_activities" | grep -q enable_webcam && enable_webcam
 
-# Display stack: full/minimal Xorg for X11 sessions; wayland+seatd+xwayland for compositors.
-# SDDM/GDM greeters still need an X stack to draw the login UI, then can start a Wayland session.
+# Display stack: full/minimal Xorg for X11 sessions; wayland+seatd+xwayland for compositors
 if [ "$NEED_XORG" = "yes" ] ; then
 	echo "$opt_activities" | grep -q minimal_xorg && xorg_pkgs=$xorg_minimal
 	display_stack="$xorg_pkgs"
 else
 	display_stack="$wayland_base_pkgs"
-	case "$DISPLAY_MGR" in
-		sddm|gdm|slim)
-			# Graphical greeter runs on X11; keep a minimal X server available
-			display_stack="$display_stack $xorg_minimal"
-			echo "session is Wayland with $DISPLAY_MGR greeter; including minimal Xorg for the login screen" | tee -a "$LOGFILE"
-			;;
-		*)
-			echo "session is Wayland; using: $display_stack" | tee -a "$LOGFILE"
-			;;
-	esac
+	echo "session is Wayland; using: $display_stack" | tee -a "$LOGFILE"
 fi
 
 # Display manager package (empty if none)
@@ -1839,7 +1825,7 @@ if [ "${vc_post_nvidia_xconfig:-0}" -eq 1 ] && [ "$NEED_XORG" = "yes" ] ; then
 	fi
 fi
 
-# Wayland: seatd, compositor config, session .desktop for greeter, CLI start helper
+# Wayland: seatd, compositor config, ly greeter, CLI start helper
 if [ "$SESSION_TYPE" = "wayland" ] ; then
 	if [ "$SEATD_NEEDED" = "yes" ] ; then
 		sysrc seatd_enable="YES"
@@ -1854,17 +1840,14 @@ if [ "$SESSION_TYPE" = "wayland" ] ; then
 	report "wayland session desktop" "$?"
 	write_wayland_start_helper "$WAYLAND_COMPOSITOR"
 	report "wayland start helper" "$?"
-	# Optional legacy TUI greeter if user forced DISPLAY_MGR=ly
 	if [ "$DISPLAY_MGR" = "ly" ] ; then
 		if ! setup_ly_greeter ; then
 			report "ly greeter" "1"
+			echo "WARNING: ly greeter setup failed — log in on the console and run: ~/start-desktop.sh" | tee -a "$LOGFILE"
+			echo "WARNING: or fix manually: pkg install ly && see installx.log for gettytab/ttys steps" | tee -a "$LOGFILE"
 		else
 			report "ly greeter" "0"
 		fi
-	fi
-	if [ "$DISPLAY_MGR" = "sddm" ] ; then
-		sysrc sddm_enable="YES"
-		echo "wayland: SDDM enabled — pick the ${WAYLAND_COMPOSITOR} session at the graphical login" | tee -a "$LOGFILE"
 	fi
 fi
 
@@ -1887,7 +1870,7 @@ if [ "${bash_yes:-1}" -eq 0 ] ; then
 fi
 
 if [ "$SESSION_TYPE" = "wayland" ] ; then
-	welcome="Thanks for trying this setup script. You selected a Wayland compositor ($WAYLAND_COMPOSITOR).\n\n• Graphical login: SDDM — at the greeter, choose the ${WAYLAND_COMPOSITOR} / Wayland session (not an X11 desktop).\n• CLI login: as your normal user run:  ~/start-desktop.sh\n  (needs seatd running; do not run as root)\n\nseatd is enabled. Hyprland on FreeBSD is still somewhat experimental — if the session fails, check installx.log and try a GPU driver install.\n\nReport problems to http://bug.freebsddesktop.xyz/ or see installx.log."
+	welcome="Thanks for trying this setup script. You selected a Wayland compositor ($WAYLAND_COMPOSITOR). seatd is enabled and a starter script was written to /home/${VUSER}/start-desktop.sh.\n\nLogin greeter: ly on ttyv1 (usually Alt+F2 after boot). Select the ${WAYLAND_COMPOSITOR} session after authenticating. If ly is not running, log in on the console and run: ~/start-desktop.sh\n\nSee the FreeBSD handbook Wayland chapter for details. Report problems to http://bug.freebsddesktop.xyz/ or check installx.log."
 else
 	welcome="Thanks for trying this setup script. If you're new to FreeBSD, it's worth noting that instead of trying to search google for how to do something, you probably want to check the handbook on freebsd.org or read the built-in man pages. \n\n Doing a 'man -k <topic>' will search for any matching documentation, and unlike some, ahem, other *nix operating systems, FreeBSD's built in documentation is really good.\n\n"
 fi
