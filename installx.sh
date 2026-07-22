@@ -41,6 +41,50 @@ is_noninteractive() {
 # not used — its gauge/programbox behaviour differs enough to break this UI.
 # If cdialog is missing we print a clear message and pkg-install it first.
 DIALOG_BIN=""
+
+# Center multi-line message on the terminal with tput (fallback: plain echo).
+# Used before cdialog exists (bootstrap UI only).
+installx_center_message() {
+	_cols=80
+	_rows=24
+	if command -v tput >/dev/null 2>&1 ; then
+		_cols=$(tput cols 2>/dev/null || echo 80)
+		_rows=$(tput lines 2>/dev/null || echo 24)
+		# Clear and home cursor when possible
+		tput clear 2>/dev/null || true
+		tput cup 0 0 2>/dev/null || true
+	else
+		clear 2>/dev/null || true
+	fi
+	# Count message lines
+	_nlines=0
+	for _line in "$@" ; do
+		_nlines=$((_nlines + 1))
+	done
+	_start_row=$(( (_rows - _nlines) / 2 ))
+	[ "$_start_row" -lt 0 ] && _start_row=0
+	_r=$_start_row
+	for _line in "$@" ; do
+		_len=${#_line}
+		_c=$(( (_cols - _len) / 2 ))
+		[ "$_c" -lt 0 ] && _c=0
+		if command -v tput >/dev/null 2>&1 ; then
+			tput cup "$_r" "$_c" 2>/dev/null || printf '\n'
+			printf '%s' "$_line"
+		else
+			# No tput: pad with spaces
+			printf "%*s%s\n" "$_c" "" "$_line"
+		fi
+		_r=$((_r + 1))
+	done
+	# Leave cursor below the block
+	if command -v tput >/dev/null 2>&1 ; then
+		tput cup $(( _start_row + _nlines + 1 )) 0 2>/dev/null || printf '\n\n'
+	else
+		printf '\n'
+	fi
+}
+
 resolve_dialog_bin() {
 	# Ensure /usr/local/bin is searchable after a fresh pkg install
 	PATH="${PATH}:/usr/local/bin"
@@ -63,10 +107,15 @@ resolve_dialog_bin() {
 		return 1
 	fi
 
-	echo "installx: installing cdialog…" | tee -a "$LOGFILE"
+	echo "installx: installing cdialog…" >> "$LOGFILE"
+	installx_center_message \
+		"installx: installing cdialog…" \
+		"" \
+		"This will take a few moments…"
 	if ! env ASSUME_ALWAYS_YES=yes pkg install -y cdialog >>"$LOGFILE" 2>&1 ; then
 		# Origin form if the short name is unavailable in this catalog
 		if ! env ASSUME_ALWAYS_YES=yes pkg install -y devel/cdialog >>"$LOGFILE" 2>&1 ; then
+			echo "" >&2
 			echo "error: failed to install cdialog (see $LOGFILE)" >&2
 			return 1
 		fi
@@ -79,7 +128,13 @@ resolve_dialog_bin() {
 
 	if command -v cdialog >/dev/null 2>&1 ; then
 		DIALOG_BIN=$(command -v cdialog)
-		echo "installx: cdialog ready ($DIALOG_BIN)" | tee -a "$LOGFILE"
+		echo "installx: cdialog ready ($DIALOG_BIN)" >> "$LOGFILE"
+		# Clear the bootstrap splash before the real UI starts
+		if command -v tput >/dev/null 2>&1 ; then
+			tput clear 2>/dev/null || true
+		else
+			clear 2>/dev/null || true
+		fi
 		return 0
 	fi
 
