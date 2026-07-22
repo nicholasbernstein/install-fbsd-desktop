@@ -989,35 +989,124 @@ echo "pkg: validating desktop options against package catalog…" | tee -a "$LOG
 
 _val_dir=$(mktemp -d /tmp/installx-val.XXXXXX) || _val_dir="/tmp/installx-val.$$"
 mkdir -p "${_val_dir}"
-(
-	_av=""
-	_un=""
-	for _tag in $ALL_DESKTOP_TAGS ; do
-		_req=$(desktop_required_pkgs "$_tag")
-		_missing=0
-		for _pn in $_req; do
-			if ! pkg_is_available "$_pn"; then _missing=1; break; fi
-		done
-		if [ $_missing -eq 0 ] ; then
-			_av="${_av} ${_tag}"
+
+# Live checklist UI: one line per desktop, updated as each catalog check finishes.
+# Marks: [ ] pending, […] checking, [✔️] available, [x] unavailable.
+# Status file lines: "TAG STATE"  STATE=pending|run|ok|fail
+installx_desktop_check_render() {
+	_sf="$1"
+	_out=""
+	while read -r _t _st || [ -n "${_t:-}" ] ; do
+		[ -z "${_t:-}" ] && continue
+		case "${_st:-pending}" in
+			ok)   _mark="[✔️]" ;;
+			fail) _mark="[x]" ;;
+			run)  _mark="[…]" ;;
+			*)    _mark="[ ]" ;;
+		esac
+		_lab=$(desktop_menu_label "$_t" 2>/dev/null || echo "$_t")
+		_out="${_out}${_mark}  ${_t} — ${_lab}
+"
+	done < "$_sf"
+	printf '%s' "$_out"
+}
+
+installx_desktop_check_set() {
+	_sf="$1"
+	_tg="$2"
+	_ns="$3"
+	_tmp="${_sf}.new"
+	: > "$_tmp"
+	while read -r _t _st || [ -n "${_t:-}" ] ; do
+		[ -z "${_t:-}" ] && continue
+		if [ "$_t" = "$_tg" ] ; then
+			echo "$_t $_ns" >> "$_tmp"
 		else
-			_un="${_un} ${_tag}"
+			echo "$_t ${_st:-pending}" >> "$_tmp"
 		fi
-	done
-	echo "$_av" | sed 's/^ *//' > "${_val_dir}/available"
-	echo "$_un" | sed 's/^ *//' > "${_val_dir}/unavailable"
-) &
-INSTALLX_CHILD_PID=$!
+	done < "$_sf"
+	mv "$_tmp" "$_sf"
+}
+
+# Paint checklist into a file and show it (textbox look; infobox for live redraws).
+installx_desktop_check_paint() {
+	_hdr="$1"
+	_sf="$2"
+	_view="$3"
+	{
+		echo "$_hdr"
+		echo ""
+		installx_desktop_check_render "$_sf"
+	} > "$_view"
+	if [ -n "${DIALOG_BIN:-}" ] ; then
+		# Height ~ header + desktops + padding
+		"$DIALOG_BIN" --title "Checking desktops" --infobox "$(cat "$_view")" 20 72
+	fi
+}
+
+_av=""
+_un=""
+_status_f="${_val_dir}/status"
+_view_f="${_val_dir}/view.txt"
+: > "${_status_f}"
+for _tag in $ALL_DESKTOP_TAGS ; do
+	echo "$_tag pending" >> "${_status_f}"
+done
 
 if ! is_noninteractive && [ -n "${DIALOG_BIN:-}" ] ; then
-	"$DIALOG_BIN" --title "Checking desktops" --infobox "Checking which desktops can be installed…\n\nQuerying the package catalog in the background. Please wait." 10 70
-	wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
-else
-	wait "${INSTALLX_CHILD_PID}" 2>/dev/null || true
+	installx_desktop_check_paint \
+		"Checking which desktops can be installed from the package catalog…" \
+		"${_status_f}" "${_view_f}"
 fi
-INSTALLX_CHILD_PID=""
+
+for _tag in $ALL_DESKTOP_TAGS ; do
+	if ! is_noninteractive && [ -n "${DIALOG_BIN:-}" ] ; then
+		installx_desktop_check_set "${_status_f}" "$_tag" run
+		installx_desktop_check_paint "Checking: ${_tag}…" "${_status_f}" "${_view_f}"
+	fi
+
+	_req=$(desktop_required_pkgs "$_tag")
+	_missing=0
+	for _pn in $_req ; do
+		if ! pkg_is_available "$_pn" ; then
+			_missing=1
+			break
+		fi
+	done
+	if [ "$_missing" -eq 0 ] ; then
+		_av="${_av} ${_tag}"
+		installx_desktop_check_set "${_status_f}" "$_tag" ok
+		echo "pkg: desktop ${_tag}: OK" | tee -a "$LOGFILE"
+	else
+		_un="${_un} ${_tag}"
+		installx_desktop_check_set "${_status_f}" "$_tag" fail
+		echo "pkg: desktop ${_tag}: unavailable (missing packages)" | tee -a "$LOGFILE"
+	fi
+
+	if ! is_noninteractive && [ -n "${DIALOG_BIN:-}" ] ; then
+		installx_desktop_check_paint "Checked ${_tag}." "${_status_f}" "${_view_f}"
+	fi
+done
+
+echo "$_av" | sed 's/^ *//' > "${_val_dir}/available"
+echo "$_un" | sed 's/^ *//' > "${_val_dir}/unavailable"
+
+if ! is_noninteractive && [ -n "${DIALOG_BIN:-}" ] ; then
+	# Final list as a textbox so the user can scroll/read before continuing
+	{
+		echo "Desktop catalog check complete."
+		echo ""
+		installx_desktop_check_render "${_status_f}"
+		echo ""
+		echo "Legend:  [✔️] installable   [x] missing packages"
+		echo ""
+		echo "Press OK to choose a desktop."
+	} > "${_view_f}"
+	dialog --title "Checking desktops" --textbox "${_view_f}" 22 72
+fi
 
 AVAILABLE_DESKTOPS=$(cat "${_val_dir}/available" 2>/dev/null || true)
+UNAVAILABLE_DESKTOPS=$(cat "${_val_dir}/unavailable" 2>/dev/null || true)
 rm -rf "${_val_dir}"
 
 if [ -z "$AVAILABLE_DESKTOPS" ] ; then
