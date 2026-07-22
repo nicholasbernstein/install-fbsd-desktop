@@ -602,12 +602,18 @@ add_user_to_video() {
 
 	pw groupmod video -m "$VUSER" && echo "added $VUSER to group: video"
 	report "add $VUSER to video group" "$?"
-	pw groupmod wheel -m "$VUSER" && echo "added $VUSER to group: wheel" 
+	pw groupmod wheel -m "$VUSER" && echo "added $VUSER to group: wheel"
 	report "add $VUSER to wheel group" "$?"
+	# seatd (Wayland) often uses the video group; some builds also ship _seatd/seat
+	if pw groupshow _seatd >/dev/null 2>&1 ; then
+		pw groupmod _seatd -m "$VUSER" && echo "added $VUSER to group: _seatd" | tee -a "$LOGFILE"
+	elif pw groupshow seat >/dev/null 2>&1 ; then
+		pw groupmod seat -m "$VUSER" && echo "added $VUSER to group: seat" | tee -a "$LOGFILE"
+	fi
 
 	# probably not necessary, logging into an x session as root isn't recommended.
 	pw groupmod video -m root
-	report "add root to wheel group" "$?"
+	report "add root to video group" "$?"
 }
 
 gen_xinit() {
@@ -694,32 +700,162 @@ HYPREOF
 	chown -R "${VUSER}" "${uhome}/.config"
 }
 
-setup_ly_greeter() {
-	# TUI greeter that can start X11 and Wayland sessions (see handbook Wayland chapter)
-	if [ ! -x /usr/local/bin/ly ] ; then
-		echo "ly not installed; skip greeter setup" | tee -a "$LOGFILE"
+# Ensure ly can see a Wayland session for the installed compositor.
+# Ly only lists .desktop files under wayland-sessions / custom-sessions.
+ensure_wayland_session_desktop() {
+	_comp="${1:-$WAYLAND_COMPOSITOR}"
+	[ -z "$_comp" ] && return 0
+	mkdir -p /usr/local/share/wayland-sessions /usr/local/etc/ly/custom-sessions
+	_desk="/usr/local/share/wayland-sessions/${_comp}.desktop"
+	# Prefer package-provided session files when present
+	if [ -f "$_desk" ] ; then
+		echo "ly: session file already present: $_desk" | tee -a "$LOGFILE"
 		return 0
 	fi
-	if ! grep -q '^Ly:' /etc/gettytab 2>/dev/null ; then
-		cat >> /etc/gettytab <<'GETTYEOF'
+	case "$_comp" in
+		hyprland)
+			cat > "$_desk" <<'DEOF'
+[Desktop Entry]
+Name=Hyprland
+Comment=Hyprland Wayland compositor
+Exec=Hyprland
+Type=Application
+DesktopNames=Hyprland
+DEOF
+			;;
+		sway)
+			cat > "$_desk" <<'DEOF'
+[Desktop Entry]
+Name=Sway
+Comment=Sway Wayland compositor
+Exec=sway
+Type=Application
+DesktopNames=sway
+DEOF
+			;;
+		*)
+			cat > "$_desk" <<DEOF
+[Desktop Entry]
+Name=${_comp}
+Comment=${_comp} Wayland session
+Exec=${_comp}
+Type=Application
+DEOF
+			;;
+	esac
+	echo "ly: wrote session file $_desk" | tee -a "$LOGFILE"
+}
 
-# installx.sh — ly greeter
-Ly:\
-	:lo=/usr/local/bin/ly:\
-	:al=:
-GETTYEOF
+setup_ly_greeter() {
+	# FreeBSD x11/ly (see pkg-message): gettytab + ttys with ly_wrapper.
+	# Modern ly (>=1.3) requires ly_wrapper, not bare /usr/local/bin/ly.
+	_ly_bin=""
+	if [ -x /usr/local/bin/ly_wrapper ] ; then
+		_ly_bin=/usr/local/bin/ly_wrapper
+	elif [ -x /usr/local/bin/ly ] ; then
+		# Older packages only shipped ly; still better than skipping
+		_ly_bin=/usr/local/bin/ly
+		echo "ly: warning: ly_wrapper missing; using $_ly_bin (upgrade x11/ly if login fails)" | tee -a "$LOGFILE"
+	else
+		echo "ERROR: ly package is not installed (expected /usr/local/bin/ly_wrapper)." | tee -a "$LOGFILE"
+		echo "ERROR: greeter was NOT configured. Install with: pkg install -y ly" | tee -a "$LOGFILE"
+		return 1
 	fi
+
+	# gettytab entry — must use ly_wrapper and al=root (official FreeBSD pkg-message)
+	if grep -q '^Ly:' /etc/gettytab 2>/dev/null ; then
+		# Rewrite stale entries that still point at bare ly
+		if grep -A2 '^Ly:' /etc/gettytab | grep -q 'lo=/usr/local/bin/ly:' ; then
+			cp /etc/gettytab /etc/gettytab.installx.bak 2>/dev/null || true
+			# Remove old Ly block (name + continuation lines)
+			awk '
+				BEGIN { skip=0 }
+				/^Ly:/ { skip=1; next }
+				skip && /^[^[:space:]#]/ { skip=0 }
+				skip && /^$/ { skip=0; next }
+				skip { next }
+				{ print }
+			' /etc/gettytab > /etc/gettytab.installx.new \
+				&& mv /etc/gettytab.installx.new /etc/gettytab
+			echo "ly: removed obsolete gettytab Ly entry (bare ly)" | tee -a "$LOGFILE"
+		fi
+	fi
+	if ! grep -q '^Ly:' /etc/gettytab 2>/dev/null ; then
+		cat >> /etc/gettytab <<GETTYEOF
+
+# installx.sh — ly greeter (x11/ly FreeBSD pkg-message)
+Ly:\\
+	:lo=${_ly_bin}:\\
+	:al=root:
+GETTYEOF
+		echo "ly: added Ly entry to /etc/gettytab (lo=${_ly_bin})" | tee -a "$LOGFILE"
+	else
+		echo "ly: /etc/gettytab already has Ly: entry" | tee -a "$LOGFILE"
+	fi
+
+	# Bind getty on ttyv1 to the Ly class (FreeBSD VTs: ttyv0, ttyv1, …)
 	if [ -f /etc/ttys ] && grep -q '^ttyv1' /etc/ttys ; then
 		cp /etc/ttys /etc/ttys.installx.bak 2>/dev/null || true
 		# shellcheck disable=SC2016
 		sed -i '' -e 's|^ttyv1.*|ttyv1	"/usr/libexec/getty Ly"	xterm	on  secure|' /etc/ttys
-		echo "configured ly on ttyv1 (backup: /etc/ttys.installx.bak)" | tee -a "$LOGFILE"
+		echo "ly: configured ttyv1 → getty Ly (backup: /etc/ttys.installx.bak)" | tee -a "$LOGFILE"
+		# Re-read ttys without full reboot when possible
+		kill -HUP 1 2>/dev/null || true
+	else
+		echo "ERROR: /etc/ttys missing ttyv1; could not enable ly greeter" | tee -a "$LOGFILE"
+		return 1
 	fi
+
+	# config.ini — install from sample and set tty for ttyv1
+	# FreeBSD: ttyv0=0, ttyv1=1 in some docs; ly's FreeBSD notes use ttyv1
+	# and often need tty=2 in config (1-based Linux-style). Prefer sample + tty=2.
+	_ly_confdir=/usr/local/etc/ly
+	_ly_conf="${_ly_confdir}/config.ini"
+	mkdir -p "$_ly_confdir"
+	if [ ! -f "$_ly_conf" ] ; then
+		if [ -f "${_ly_confdir}/config.ini.sample" ] ; then
+			cp "${_ly_confdir}/config.ini.sample" "$_ly_conf"
+			echo "ly: installed config.ini from sample" | tee -a "$LOGFILE"
+		else
+			# Minimal config if sample is missing
+			cat > "$_ly_conf" <<'LYCONF'
+# installx.sh minimal ly config
+tty = 2
+animation = none
+LYCONF
+			echo "ly: wrote minimal config.ini (no sample found)" | tee -a "$LOGFILE"
+		fi
+	fi
+	# Ensure tty points at the VT used by getty Ly (ttyv1 → ly tty 2)
+	if grep -qE '^[[:space:]]*#?[[:space:]]*tty[[:space:]]*=' "$_ly_conf" 2>/dev/null ; then
+		sed -i '' -E 's/^[[:space:]]*#?[[:space:]]*tty[[:space:]]*=.*/tty = 2/' "$_ly_conf"
+	else
+		echo "tty = 2" >> "$_ly_conf"
+	fi
+	echo "ly: config.ini tty=2 (matches ttyv1 getty)" | tee -a "$LOGFILE"
+
+	# Session .desktop so Hyprland/Sway appear in ly's list
+	ensure_wayland_session_desktop "${WAYLAND_COMPOSITOR}"
+
+	echo "ly: greeter ready — after reboot use ttyv1 (Alt+F2). Log in and pick the Wayland session." | tee -a "$LOGFILE"
+	return 0
 }
 
 write_wayland_start_helper() {
 	uhome="/home/${VUSER}"
 	comp="${1:-$WAYLAND_COMPOSITOR}"
+	# FreeBSD hyprland package ships the binary as Hyprland (capital H)
+	case "$comp" in
+		hyprland|Hyprland)
+			if command -v Hyprland >/dev/null 2>&1 ; then
+				comp=Hyprland
+			elif command -v hyprland >/dev/null 2>&1 ; then
+				comp=hyprland
+			else
+				comp=Hyprland
+			fi
+			;;
+	esac
 	cat > "${uhome}/start-desktop.sh" <<EOF
 #!/bin/sh
 # Generated by installx.sh — start the installed Wayland compositor
@@ -731,6 +867,7 @@ EOF
 	mkdir -p /etc/skel
 	cp "${uhome}/start-desktop.sh" /etc/skel/start-desktop.sh
 	chmod +x /etc/skel/start-desktop.sh
+	echo "wayland: wrote ${uhome}/start-desktop.sh → exec ${comp}" | tee -a "$LOGFILE"
 }
 
 apply_display_manager() {
@@ -1650,8 +1787,13 @@ if [ "$SESSION_TYPE" = "wayland" ] ; then
 	write_wayland_start_helper "$WAYLAND_COMPOSITOR"
 	report "wayland start helper" "$?"
 	if [ "$DISPLAY_MGR" = "ly" ] ; then
-		setup_ly_greeter
-		report "ly greeter" "$?"
+		if ! setup_ly_greeter ; then
+			report "ly greeter" "1"
+			echo "WARNING: ly greeter setup failed — log in on the console and run: $WAYLAND_COMPOSITOR" | tee -a "$LOGFILE"
+			echo "WARNING: or fix manually: pkg install ly && see installx.log for gettytab/ttys steps" | tee -a "$LOGFILE"
+		else
+			report "ly greeter" "0"
+		fi
 	fi
 fi
 
@@ -1674,7 +1816,7 @@ if [ "${bash_yes:-1}" -eq 0 ] ; then
 fi
 
 if [ "$SESSION_TYPE" = "wayland" ] ; then
-	welcome="Thanks for trying this setup script. You selected a Wayland compositor ($WAYLAND_COMPOSITOR). seatd is enabled and a starter script was written to /home/${VUSER}/start-desktop.sh. If ly was installed, use the greeter on ttyv1 after reboot; otherwise log in on the console and run: $WAYLAND_COMPOSITOR\n\nSee the FreeBSD handbook Wayland chapter for details. Report problems to http://bug.freebsddesktop.xyz/ or check installx.log."
+	welcome="Thanks for trying this setup script. You selected a Wayland compositor ($WAYLAND_COMPOSITOR). seatd is enabled and a starter script was written to /home/${VUSER}/start-desktop.sh.\n\nLogin greeter: ly on ttyv1 (usually Alt+F2 after boot). Select the ${WAYLAND_COMPOSITOR} session after authenticating. If ly is not running, log in on the console and run: ${WAYLAND_COMPOSITOR}\n  (or: ~/start-desktop.sh)\n\nSee the FreeBSD handbook Wayland chapter for details. Report problems to http://bug.freebsddesktop.xyz/ or check installx.log."
 else
 	welcome="Thanks for trying this setup script. If you're new to FreeBSD, it's worth noting that instead of trying to search google for how to do something, you probably want to check the handbook on freebsd.org or read the built-in man pages. \n\n Doing a 'man -k <topic>' will search for any matching documentation, and unlike some, ahem, other *nix operating systems, FreeBSD's built in documentation is really good.\n\n"
 fi
