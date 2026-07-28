@@ -300,9 +300,8 @@ load_atapi() {
 }
 
 load_fuse() {
-	# Filesystems in Userspace
-	fuse_pkgs="fuse fuse-utils"
-	extra_pkgs="$extra_pkgs fusefs-lkl e2fsprogs"
+	# Filesystems in Userspace (userland tools + Linux FS helpers)
+	extra_pkgs="$extra_pkgs fuse fuse-utils fusefs-lkl e2fsprogs"
 	sysrc kld_list+="fusefs"
 }
 
@@ -538,26 +537,23 @@ if ( uname -r | grep -q "^11" ) ; then
 	pwd_mkdb -p /etc/master.passwd
 fi
 
-# Resolve KDE/Plasma package set for this ABI/catalog.
-# Prefer meta ports (kde, plasma6-plasma). On some FreeBSD 15.x catalogs the
-# metas are missing while individual plasma6-* packages exist — use a
-# component fallback so KDE stays installable. Echo empty if nothing usable.
+# Resolve KDE/Plasma 6 package set for this ABI/catalog.
+# Recommended order (current FreeBSD packages are Plasma 6):
+#   1) x11/kde              — full Plasma 6 desktop + KDE apps (preferred)
+#   2) x11/plasma6-plasma   — Plasma 6 desktop meta (+ konsole when available)
+#   3) plasma6-* components — when metas are missing from the catalog
+# Echo empty if nothing usable (desktop option is then hidden / fails closed).
 kde_desktop_pkgs() {
 	if pkg_is_available kde ; then
 		echo "kde"
 		return 0
 	fi
 	if pkg_is_available plasma6-plasma ; then
-		# Handbook-style minimal Plasma 6 meta
 		if pkg_is_available konsole ; then
 			echo "plasma6-plasma konsole"
 		else
 			echo "plasma6-plasma"
 		fi
-		return 0
-	fi
-	if pkg_is_available plasma5-plasma ; then
-		echo "plasma5-plasma"
 		return 0
 	fi
 	# Component fallback (metas absent; pieces present — common on early 15.x)
@@ -584,7 +580,7 @@ kde_desktop_pkgs() {
 		echo "$_kde_fb"
 		return 0
 	fi
-	# Nothing installable for KDE on this catalog
+	# Nothing installable for KDE/Plasma 6 on this catalog
 	echo ""
 	return 1
 }
@@ -616,7 +612,7 @@ desktop_required_pkgs() {
 
 desktop_menu_label() {
 	case $(echo "$1" | tr '[:upper:]' '[:lower:]') in
-		kde) echo "KDE Plasma 6 (X11)" ;;
+		kde) echo "KDE Plasma 6 desktop + apps (X11, recommended)" ;;
 		gnome) echo "GNOME desktop (X11)" ;;
 		xfce4) echo "Lightweight XFCE desktop (X11)" ;;
 		mate) echo "MATE desktop, GNOME 2 fork (X11)" ;;
@@ -1196,11 +1192,11 @@ case $desktop_key in
       DESKTOP_PKGS=$(kde_desktop_pkgs)
       DISPLAY_MGR="sddm"
       if [ -z "$DESKTOP_PKGS" ] ; then
-          echo "FATAL: KDE/Plasma packages not available in the current pkg catalog." | tee -a "$LOGFILE"
-          echo "FATAL: need one of: kde, plasma6-plasma, or plasma6-plasma-desktop (+ components)." | tee -a "$LOGFILE"
+          echo "FATAL: KDE/Plasma 6 packages not available in the current pkg catalog." | tee -a "$LOGFILE"
+          echo "FATAL: need one of: kde (preferred), plasma6-plasma, or plasma6-plasma-desktop (+ components)." | tee -a "$LOGFILE"
           exit 1
       fi
-      echo "kde: using packages: $DESKTOP_PKGS" | tee -a "$LOGFILE"
+      echo "kde/plasma6: using packages: $DESKTOP_PKGS" | tee -a "$LOGFILE"
       ;;
   windowmaker)
       XINIT_CMD="/usr/local/bin/wmaker"
@@ -1312,6 +1308,8 @@ else
 	_extra_skipped=""
 	for _line in \
 		"firefox|Firefox Web browser|on" \
+		"chromium|Chromium Web browser|off" \
+		"linux-brave|Brave browser (Linux binary package)|off" \
 		"bash|GNU Bourne-Again SHell|on" \
 		"vim|VI Improved|on" \
 		"git-lite|Lightweight Git client|on" \
@@ -1331,6 +1329,10 @@ else
 		_eo=$(echo "$_line" | cut -d'|' -f3)
 		if pkg_is_available "$_en" ; then
 			_extra_cmd="$_extra_cmd \"$_en\" \"$_ed\" $_eo"
+		elif [ "$_en" = "firefox" ] && pkg_is_available firefox-esr ; then
+			# 15.x quarterly sometimes ships firefox-esr only
+			_extra_cmd="$_extra_cmd \"firefox-esr\" \"Firefox ESR (catalog fallback)\" $_eo"
+			echo "pkg: firefox not in catalog; offering firefox-esr instead" | tee -a "$LOGFILE"
 		else
 			_extra_skipped="${_extra_skipped} ${_en}"
 			echo "pkg: extra package not in catalog, removed from menu: ${_en}" | tee -a "$LOGFILE"
@@ -1349,19 +1351,33 @@ echo "Extra packages:" "$extra_pkgs" | tee -a "$LOGFILE"
 
 # by default install the full xorg, but if xorg_minimal is set, override it
 
-echo "$extra_pkgs" | grep -q linux_base-c7 && linuxBaseC7
+# Linuxulator setup for CentOS7 base and/or linux-brave (and its linux-rl9 deps)
+if echo "$extra_pkgs" | grep -Eq 'linux_base-c7|linux-brave' ; then
+	linuxBaseC7
+fi
 echo "$extra_pkgs" | grep -q virtualbox-ose-additions && enable_virtualbox_ose_additions
 
 # ---------------------------------------------------------------------------
-# Graphics drivers (FreeBSD handbook §X11 / graphics drivers)
+# Graphics drivers (FreeBSD handbook: books/handbook/x11 § Graphics Drivers)
+# https://docs.freebsd.org/en/books/handbook/x11/#x-graphic-card-drivers
 #
 # Flow: detect GPUs via pciconf → pre-check checklist (or auto in CI) →
-# install packages + enable klds. drm-kmod is a metaport (versioned per
-# FreeBSD major). NVIDIA default is nvidia-drm-kmod; legacy branches
-# (470/390/340) remain available for older cards.
+# install packages + enable klds / loader.conf as the handbook table specifies.
+#
+# Handbook mapping (Type → Module → Port):
+#   Intel     → i915kms       → graphics/drm-kmod
+#   AMD       → amdgpu|radeonkms → graphics/drm-kmod
+#   NVIDIA    → nvidia-drm|nvidia-modeset|nvidia → nvidia-drm-kmod | nvidia-driver*
+#   SCFB      → scfb          → x11-drivers/xf86-video-scfb  (UEFI)
+#   VESA      → vesa          → x11-drivers/xf86-video-vesa  (BIOS)
+#   VirtualBox→ vboxvideo     → emulators/virtualbox-ose-additions
+#   VMware    → vmwgfx        → x11-drivers/xf86-video-vmware
+#
+# drm-kmod / nvidia-drm-kmod are metaports (pick versioned kmods per FreeBSD major).
 # ---------------------------------------------------------------------------
 vc_pkgs=""
 vc_post_nvidia_xconfig=0
+vc_post_vbox=0
 vc_selected=""
 DETECTED_GPUS=""
 DETECTED_HINT=""
@@ -1437,14 +1453,15 @@ graphics_detect() {
 
 	for _g in $_found ; do
 		case "$_g" in
-			i915kms|amdgpu|nvidia|vmwgfx)
+			i915kms|amdgpu|nvidia|vmwgfx|vbox)
+				# Handbook-named drivers (incl. VirtualBox guest additions)
 				case " ${DETECTED_GPUS} " in
 					*" ${_g} "*) ;;
 					*) DETECTED_GPUS="${DETECTED_GPUS} ${_g}" ;;
 				esac
 				;;
-			vbox|virtio)
-				# Prefer console framebuffer for common hypervisors unless user overrides
+			virtio)
+				# No handbook-specific dGPU package; fall back by boot method
 				_fb=scfb
 				if command -v sysctl >/dev/null 2>&1 ; then
 					_boot=$(sysctl -n machdep.bootmethod 2>/dev/null || true)
@@ -1485,20 +1502,23 @@ graphics_select() {
 	_gpu="$1"
 	case "$_gpu" in
 		i915kms)
+			# Handbook § Intel: pkg install drm-kmod; sysrc kld_list+=i915kms
 			graphics_append_pkg drm-kmod
 			graphics_enable_kld i915kms
 			;;
 		amdgpu)
-			# Modern AMD — modesetting usually enough; skip vendor DDX by default
+			# Handbook § AMD modern (HD7000/Tahiti+): drm-kmod + amdgpu
 			graphics_append_pkg drm-kmod
 			graphics_enable_kld amdgpu
 			;;
 		radeonkms)
+			# Handbook § AMD legacy pre-HD7000: drm-kmod + radeonkms
 			graphics_append_pkg drm-kmod
 			graphics_enable_kld radeonkms
 			;;
 		nvidia)
-			# Current handbook default (KMS / PRIME / Wayland)
+			# Handbook § NVIDIA current: nvidia-drm-kmod + nvidia-drm + modeset=1
+			# (KMS required for PRIME and Wayland)
 			graphics_append_pkg nvidia-drm-kmod
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg nvidia-settings nvidia-xconfig
@@ -1508,6 +1528,7 @@ graphics_select() {
 			graphics_loader_conf 'hw.nvidiadrm.modeset="1"'
 			;;
 		nvidia_modeset)
+			# Non-DRM modeset path (nvidia-driver meta without nvidia-drm)
 			graphics_append_pkg nvidia-driver
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg nvidia-settings nvidia-xconfig
@@ -1516,7 +1537,7 @@ graphics_select() {
 			graphics_enable_kld nvidia-modeset
 			;;
 		nvidia470|nvidia_470)
-			# Legacy branch for older cards (handbook table)
+			# Handbook table: x11/nvidia-driver-470 → nvidia-modeset
 			graphics_append_pkg nvidia-driver-470
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg nvidia-xconfig
@@ -1525,6 +1546,7 @@ graphics_select() {
 			graphics_enable_kld nvidia-modeset
 			;;
 		nvidia390|nvidia_390)
+			# Handbook table: x11/nvidia-driver-390 → nvidia-modeset
 			graphics_append_pkg nvidia-driver-390
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg nvidia-xconfig
@@ -1533,7 +1555,7 @@ graphics_select() {
 			graphics_enable_kld nvidia-modeset
 			;;
 		nvidia340|nvidia_340)
-			# Pre-390: load nvidia (not modeset); needs legacy console/X in some cases
+			# Handbook: pre-390 → nvidia kld; legacy sc(4) console / older X
 			graphics_append_pkg nvidia-driver-340
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg nvidia-xconfig
@@ -1541,7 +1563,17 @@ graphics_select() {
 			fi
 			graphics_enable_kld nvidia
 			;;
+		nvidia304|nvidia_304)
+			# Handbook table: x11/nvidia-driver-304 → nvidia
+			graphics_append_pkg nvidia-driver-304
+			if [ "$NEED_XORG" = "yes" ] ; then
+				graphics_append_pkg nvidia-xconfig
+				vc_post_nvidia_xconfig=1
+			fi
+			graphics_enable_kld nvidia
+			;;
 		vesa)
+			# Handbook: BIOS boot fallback — xf86-video-vesa (X11)
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg xf86-video-vesa
 			else
@@ -1549,6 +1581,7 @@ graphics_select() {
 			fi
 			;;
 		scfb)
+			# Handbook: UEFI framebuffer — xf86-video-scfb (X11)
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg xf86-video-scfb
 			else
@@ -1556,10 +1589,16 @@ graphics_select() {
 			fi
 			;;
 		vmwgfx)
+			# Handbook: VMware® — xf86-video-vmware + vmwgfx
 			if [ "$NEED_XORG" = "yes" ] ; then
 				graphics_append_pkg xf86-video-vmware
 			fi
 			graphics_enable_kld vmwgfx
+			;;
+		vbox)
+			# Handbook: VirtualBox® — virtualbox-ose-additions (vboxvideo)
+			graphics_append_pkg virtualbox-ose-additions
+			vc_post_vbox=1
 			;;
 		other|"")
 			;;
@@ -1572,7 +1611,7 @@ graphics_select() {
 # Warn if multiple conflicting NVIDIA stacks were chosen
 graphics_warn_nvidia_conflict() {
 	_n=0
-	for _t in nvidia nvidia_modeset nvidia470 nvidia_470 nvidia390 nvidia_390 nvidia340 nvidia_340 ; do
+	for _t in nvidia nvidia_modeset nvidia470 nvidia_470 nvidia390 nvidia_390 nvidia340 nvidia_340 nvidia304 nvidia_304 ; do
 		case " ${vc_selected} " in
 			*" ${_t} "*) _n=$((_n + 1)) ;;
 		esac
@@ -1611,22 +1650,25 @@ if [ "$install_dv_drivers" -eq 0  ] ; then
 		_def_radeon=off
 		_def_nvidia=$(graphics_checklist_state nvidia)
 		_def_vmw=$(graphics_checklist_state vmwgfx)
+		_def_vbox=$(graphics_checklist_state vbox)
 		_def_scfb=$(graphics_checklist_state scfb)
 		_def_vesa=$(graphics_checklist_state vesa)
 		# radeonkms never auto-on (AMD defaults to amdgpu); user may enable for pre-HD7000
 
-		card=$(dialog --checklist "GPU drivers (detected: ${DETECTED_GPUS:-none}). Multi-select OK for hybrid/PRIME.\n${DETECTED_HINT}" 0 0 0 \
+		card=$(dialog --checklist "GPU drivers (detected: ${DETECTED_GPUS:-none}). Multi-select OK for hybrid/PRIME.\nHandbook: docs.freebsd.org …/x11/#x-graphic-card-drivers\n${DETECTED_HINT}" 0 0 0 \
 		i915kms "Intel (drm-kmod → i915kms)" "${_def_i915}" \
-		amdgpu "AMD modern (drm-kmod → amdgpu)" "${_def_amd}" \
+		amdgpu "AMD modern HD7000+ (drm-kmod → amdgpu)" "${_def_amd}" \
 		radeonkms "AMD legacy pre-HD7000 (drm-kmod → radeonkms)" "${_def_radeon}" \
-		nvidia "NVIDIA current (nvidia-drm-kmod, KMS/Wayland)" "${_def_nvidia}" \
-		nvidia_modeset "NVIDIA latest modeset-only (no drm)" off \
-		nvidia470 "NVIDIA legacy 470.xx branch" off \
-		nvidia390 "NVIDIA legacy 390.xx branch" off \
-		nvidia340 "NVIDIA legacy 340.xx branch" off \
-		scfb "UEFI framebuffer (X11)" "${_def_scfb}" \
-		vesa "VESA BIOS fallback (X11)" "${_def_vesa}" \
-		vmwgfx "VMware SVGA" "${_def_vmw}" \
+		nvidia "NVIDIA current (nvidia-drm-kmod → nvidia-drm, KMS/Wayland)" "${_def_nvidia}" \
+		nvidia_modeset "NVIDIA modeset-only (nvidia-driver, no DRM)" off \
+		nvidia470 "NVIDIA legacy 470.xx (nvidia-modeset)" off \
+		nvidia390 "NVIDIA legacy 390.xx (nvidia-modeset)" off \
+		nvidia340 "NVIDIA legacy 340.xx (nvidia kld)" off \
+		nvidia304 "NVIDIA legacy 304.xx (nvidia kld)" off \
+		scfb "UEFI framebuffer SCFB (xf86-video-scfb, X11)" "${_def_scfb}" \
+		vesa "VESA BIOS fallback (xf86-video-vesa, X11)" "${_def_vesa}" \
+		vmwgfx "VMware SVGA (xf86-video-vmware + vmwgfx)" "${_def_vmw}" \
+		vbox "VirtualBox guest (virtualbox-ose-additions / vboxvideo)" "${_def_vbox}" \
 		other "None of the above / show pciconf only" off \
 		--stdout)
 	fi
@@ -1656,9 +1698,15 @@ if [ "$install_dv_drivers" -eq 0  ] ; then
 		fi
 	fi
 
+	# Handbook: some cards need firmware under /boot/firmware
 	if command -v fwget >/dev/null 2>&1 ; then
 		echo "graphics: running fwget to fetch device firmware (if any)" | tee -a "$LOGFILE"
 		fwget 2>/dev/null || true
+	fi
+
+	if [ "${vc_post_vbox:-0}" -eq 1 ] ; then
+		# Services + guest tips (package installs later with all_pkgs)
+		enable_virtualbox_ose_additions
 	fi
 
 	echo "graphics: packages pending:${vc_pkgs:- (none)}" | tee -a "$LOGFILE"
