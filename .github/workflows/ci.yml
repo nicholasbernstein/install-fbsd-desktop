@@ -32,7 +32,9 @@ jobs:
       - name: Shell / script syntax
         run: |
           set -euo pipefail
-          for f in installx.sh install.sh test_installx.sh scripts/build-freebsd-pkg.sh scripts/test-dialog-ui.sh; do
+          for f in installx.sh install.sh test_installx.sh \
+            scripts/build-freebsd-pkg.sh scripts/test-dialog-ui.sh \
+            tests/unit/extract_functions.sh tests/unit/test_installx_logic.sh; do
             echo "==> bash -n $f"
             bash -n "$f"
           done
@@ -48,6 +50,38 @@ jobs:
           python3 scripts/freebsd-supported-releases.py --fallback-only --lines
           echo "==> pin"
           python3 scripts/freebsd-supported-releases.py --pin 14.4 --github-matrix
+
+  # -------------------------------------------------------------------------
+  # FreeBSD unit tests (extract pure helpers from installx.sh; no full install)
+  # installx.sh remains a single-file download — tests are repo/CI only.
+  # -------------------------------------------------------------------------
+  unit-tests-freebsd:
+    name: Unit tests (FreeBSD)
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run installx unit tests on FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.4"
+          usesh: true
+          copyback: false
+          prepare: |
+            set -e
+            export ASSUME_ALWAYS_YES=yes
+            export IGNORE_OSVERSION=yes
+            # No extra packages required — pure sh + awk + shunit2
+            true
+          run: |
+            set -e
+            set -x
+            cd "$GITHUB_WORKSPACE" 2>/dev/null || cd "$(pwd)"
+            freebsd-version || true
+            sh tests/unit/test_installx_logic.sh
+            echo "unit-tests-freebsd: PASS"
 
   # -------------------------------------------------------------------------
   # FreeBSD cdialog UI smoke (widgets + one expect interactive run)
@@ -269,6 +303,7 @@ jobs:
     name: Publish GitHub Release if content changed
     needs:
       - package
+      - unit-tests-freebsd
       - dialog-ui-freebsd
       - smoke-awesome
       - smoke-windowmaker

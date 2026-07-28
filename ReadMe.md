@@ -45,20 +45,35 @@ One menu lists desktops and compositors together. You pick what you want;
 
 Wayland installs also write `~/start-desktop.sh` and enable `seatd`.
 
+## Testing
+
+`installx.sh` is a **single-file** installer (download and run with nothing
+else). Unit tests live in the repo for developers/CI only.
+
+On FreeBSD, from a checkout:
+
+```sh
+sh tests/unit/test_installx_logic.sh   # pure helpers extracted from installx.sh
+# after a noninteractive install:
+sh test_installx.sh                    # post-install checks (shunit2)
+```
+
 ## CI
 
 One workflow runs **everything** on every push, weekly schedule, PR, or manual
 dispatch (`.github/workflows/ci.yml`):
 
 1. **Lint** — shell/python syntax and FreeBSD release discovery script  
-2. **Dialog UI smokes** (FreeBSD VM) — `scripts/test-dialog-ui.sh` (cdialog
+2. **Unit tests** (FreeBSD VM) — `tests/unit/test_installx_logic.sh` (KDE/Plasma
+   package resolution, catalog filters, handbook GPU selections)  
+3. **Dialog UI smokes** (FreeBSD VM) — `scripts/test-dialog-ui.sh` (cdialog
    widgets) plus one expect run (`scripts/test-dialog-expect.exp`: welcome +
    Ctrl+C). Interactive installs `pkg install cdialog` on first run if needed.
-3. **All desktop smokes** (in parallel) — each desktop × currently supported
+4. **All desktop smokes** (in parallel) — each desktop × currently supported
    FreeBSD releases ([security.freebsd.org](https://www.freebsd.org/security/#sup),
    via `scripts/freebsd-supported-releases.py`)  
-4. **Package build** (in parallel with smokes) — `.pkg`, `installx.sh`, ports tarball  
-5. **Release** — only if **all** of the above succeeded **and** `CONTENT_SHA256`
+5. **Package build** (in parallel with smokes) — `.pkg`, `installx.sh`, ports tarball  
+6. **Release** — only if **all** of the above succeeded **and** `CONTENT_SHA256`
    differs from the current `latest` release (otherwise skip publish)
 
 Desktops covered: awesome, WindowMaker, LXDE, LXQT, Xfce4, Sway, Hyprland,
