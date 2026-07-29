@@ -83,15 +83,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The FreeBSD VM action often reports "Error: The operation was canceled"
+      # during host-side VM teardown *after* installx + shunit2 already passed.
+      # Use a live NFS workspace so we can leave a pass/fail marker the host sees,
+      # then decide job success from that marker (not from VM teardown status).
       - name: Install ${{ inputs.desktop }} on FreeBSD ${{ matrix.release }}
+        id: smoke_vm
+        continue-on-error: true
         uses: vmactions/freebsd-vm@v1
         with:
           release: ${{ matrix.release }}
           usesh: true
           mem: ${{ inputs.mem }}
-          # copyback of a full desktop tree is slow and often hits cancel/timeout
-          # *after* tests already passed ("Error: The operation was canceled").
-          # Logs are printed into the Actions log below instead of artifacts.
+          sync: nfs
           copyback: false
           prepare: |
             set -e
@@ -105,6 +109,10 @@ jobs:
             export ASSUME_ALWAYS_YES=yes
             export IGNORE_OSVERSION=yes
             cd "$GITHUB_WORKSPACE" 2>/dev/null || cd "$(pwd)"
+            RESULT_FILE="$(pwd)/.smoke-result"
+            rm -f "$RESULT_FILE"
+            echo "running" > "$RESULT_FILE"
+
             freebsd-version
             uname -a
 
@@ -157,7 +165,7 @@ jobs:
             install_rc=$?
             set -e
 
-            # Always emit logs into the job stream (no copyback/artifacts)
+            # Always emit logs into the job stream
             echo "==== installx.log (tail) ===="
             tail -n 200 installx.log 2>/dev/null || echo "(no installx.log)"
             echo "==== installx.err (tail) ===="
@@ -170,6 +178,7 @@ jobs:
               echo "---- try pkg search kde/plasma6 ----"
               pkg search -q kde 2>/dev/null | head -n 20 || true
               pkg search -q plasma6-plasma 2>/dev/null | head -n 10 || true
+              echo "fail" > "$RESULT_FILE"
               exit "$install_rc"
             fi
 
@@ -188,9 +197,31 @@ jobs:
               cat /etc/fstab || true
               echo "---- groups ----"
               grep -E 'video|wheel' /etc/group || true
+              echo "fail" > "$RESULT_FILE"
               exit "$test_rc"
             fi
 
             echo "==== Smoketest passed: ${{ inputs.desktop }} on FreeBSD ${{ matrix.release }} ===="
-            # Exit immediately so the VM action tears down without a long copyback window
+            # Host-visible marker (nfs mount) — job success is based on this, not VM teardown
+            echo "pass" > "$RESULT_FILE"
+            sync 2>/dev/null || true
             exit 0
+
+      - name: Evaluate smoke result
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "VM step outcome: ${{ steps.smoke_vm.outcome }}"
+          if [ -f .smoke-result ]; then
+            echo "Marker contents: $(cat .smoke-result)"
+          else
+            echo "Marker missing (.smoke-result)"
+          fi
+          # Prefer the in-guest result: install + shunit2 already finished successfully
+          # even when the VM action is later canceled during teardown.
+          if [ -f .smoke-result ] && grep -qx pass .smoke-result; then
+            echo "Smoke PASSED (installx + shunit2)."
+            exit 0
+          fi
+          echo "Smoke FAILED or incomplete." >&2
+          exit 1

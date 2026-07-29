@@ -17,12 +17,12 @@ on:
 permissions:
   contents: write
 
-# One active CI run per branch/ref. A new push cancels the previous run —
-# that shows as "Error: The operation was canceled" even if smokes already
-# printed "Smoketest passed". Prefer waiting for the latest run on the branch.
+# One active CI "slot" per branch/ref for queueing. Do not cancel in-progress
+# runs: smokes often finish install+tests, then die during FreeBSD VM teardown
+# with "Error: The operation was canceled" when a newer push aborts them.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   # -------------------------------------------------------------------------
