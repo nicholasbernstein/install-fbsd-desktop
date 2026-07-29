@@ -95,8 +95,13 @@ jobs:
           release: ${{ matrix.release }}
           usesh: true
           mem: ${{ inputs.mem }}
-          sync: nfs
+          # rsync + no copyback: avoid NFS mount hangs on teardown
+          sync: rsync
           copyback: false
+          # Critical: after run exits, freebsd-vm still background-saves a multi-GB
+          # VM image cache and does not process.exit(0). That leaves the step
+          # "running" until the job timeout → "Error: The operation was canceled."
+          disable-cache: true
           prepare: |
             set -e
             export ASSUME_ALWAYS_YES=yes

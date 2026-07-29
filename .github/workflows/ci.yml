@@ -72,6 +72,9 @@ jobs:
           release: "14.4"
           usesh: true
           copyback: false
+          # Avoid background multi-GB VM cache save that keeps the step alive
+          # until job timeout after the guest script has already finished.
+          disable-cache: true
           prepare: |
             set -e
             export ASSUME_ALWAYS_YES=yes
