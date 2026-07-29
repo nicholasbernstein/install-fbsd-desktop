@@ -89,7 +89,10 @@ jobs:
           release: ${{ matrix.release }}
           usesh: true
           mem: ${{ inputs.mem }}
-          copyback: true
+          # copyback of a full desktop tree is slow and often hits cancel/timeout
+          # *after* tests already passed ("Error: The operation was canceled").
+          # Logs are printed into the Actions log below instead of artifacts.
+          copyback: false
           prepare: |
             set -e
             export ASSUME_ALWAYS_YES=yes
@@ -153,10 +156,13 @@ jobs:
             sh ./installx.sh
             install_rc=$?
             set -e
+
+            # Always emit logs into the job stream (no copyback/artifacts)
             echo "==== installx.log (tail) ===="
             tail -n 200 installx.log 2>/dev/null || echo "(no installx.log)"
             echo "==== installx.err (tail) ===="
             tail -n 200 installx.err 2>/dev/null || echo "(no installx.err)"
+
             if [ "$install_rc" -ne 0 ]; then
               echo "installx.sh failed with status $install_rc" >&2
               echo "---- pkg / FATAL lines ----"
@@ -186,13 +192,5 @@ jobs:
             fi
 
             echo "==== Smoketest passed: ${{ inputs.desktop }} on FreeBSD ${{ matrix.release }} ===="
-
-      - name: Upload install logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: installx-logs-${{ inputs.desktop }}-${{ matrix.release }}-${{ github.run_id }}
-          path: |
-            installx.log
-            installx.err
-          if-no-files-found: ignore
+            # Exit immediately so the VM action tears down without a long copyback window
+            exit 0
