@@ -107,6 +107,7 @@ jobs:
           release: "14.4"
           usesh: true
           copyback: true
+          disable-cache: true
           prepare: |
             set -e
             export ASSUME_ALWAYS_YES=yes
@@ -257,6 +258,7 @@ jobs:
           release: "14.4"
           usesh: true
           copyback: true
+          disable-cache: true
           prepare: |
             set -e
             export ASSUME_ALWAYS_YES=yes
