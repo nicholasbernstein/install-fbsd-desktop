@@ -91,6 +91,8 @@ sh "$EXTRACT" "$INSTALLX" \
 	graphics_append_pkg \
 	graphics_select \
 	graphics_warn_nvidia_conflict \
+	check_root_owned_not_writable \
+	_gettytab_strip_ly \
 	> "$_EXTRACTED"
 
 # shellcheck disable=SC1090
@@ -330,6 +332,140 @@ test_graphics_warn_nvidia_conflict() {
 	vc_selected="nvidia nvidia470"
 	# Should not fail; only log warning
 	graphics_warn_nvidia_conflict
+}
+
+# ---------------------------------------------------------------------------
+# Tests: ly greeter helpers (gettytab strip + ownership checks)
+# ---------------------------------------------------------------------------
+test_gettytab_strip_ly_removes_block() {
+	_in=$(mktemp "${TMPDIR:-/tmp}/gt-in.XXXXXX")
+	_out=$(mktemp "${TMPDIR:-/tmp}/gt-out.XXXXXX")
+	cat > "$_in" <<'EOF'
+# comment
+default:\
+	:np:
+
+Ly:\
+	:lo=/usr/local/bin/ly_wrapper:\
+	:al=root:
+
+Pc|Pc|Pc console:\
+	:ht:np:sp#115200:
+EOF
+	_gettytab_strip_ly "$_in" "$_out"
+	assertFalse "Ly: block removed" "grep -q '^Ly:' \"$_out\""
+	assertFalse "ly_wrapper line removed" "grep -q ly_wrapper \"$_out\""
+	assertTrue "default preserved" "grep -q '^default:' \"$_out\""
+	assertTrue "Pc preserved" "grep -q '^Pc|' \"$_out\""
+	assertTrue "comment preserved" "grep -q '^# comment' \"$_out\""
+	rm -f "$_in" "$_out"
+}
+
+test_gettytab_strip_ly_idempotent() {
+	_in=$(mktemp "${TMPDIR:-/tmp}/gt-in.XXXXXX")
+	_out=$(mktemp "${TMPDIR:-/tmp}/gt-out.XXXXXX")
+	_out2=$(mktemp "${TMPDIR:-/tmp}/gt-out2.XXXXXX")
+	cat > "$_in" <<'EOF'
+foo:\
+	:np:
+
+Ly:\
+	:lo=/old:\
+	:al=root:
+EOF
+	_gettytab_strip_ly "$_in" "$_out"
+	_gettytab_strip_ly "$_out" "$_out2"
+	assertEquals "second strip is stable" "$(cat "$_out")" "$(cat "$_out2")"
+	assertFalse "still no Ly" "grep -q '^Ly:' \"$_out2\""
+	rm -f "$_in" "$_out" "$_out2"
+}
+
+test_gettytab_rebuild_single_ly_entry() {
+	# Simulate transactional rewrite: strip + append exactly one Ly block
+	_in=$(mktemp "${TMPDIR:-/tmp}/gt-in.XXXXXX")
+	_mid=$(mktemp "${TMPDIR:-/tmp}/gt-mid.XXXXXX")
+	_out=$(mktemp "${TMPDIR:-/tmp}/gt-out.XXXXXX")
+	cat > "$_in" <<'EOF'
+std:\
+	:np:
+
+Ly:\
+	:lo=/usr/local/bin/ly:\
+	:al=root:
+EOF
+	_gettytab_strip_ly "$_in" "$_mid"
+	{
+		cat "$_mid"
+		cat <<'EOF'
+
+# installx
+Ly:\
+	:lo=/usr/local/bin/ly_wrapper:\
+	:al=root:
+EOF
+	} > "$_out"
+	_count=$(grep -c '^Ly:' "$_out")
+	assertEquals "exactly one Ly: entry" "1" "$_count"
+	assertTrue "uses ly_wrapper not bare ly as lo" "grep -q 'lo=/usr/local/bin/ly_wrapper' \"$_out\""
+	assertFalse "bare ly lo removed" "grep -q 'lo=/usr/local/bin/ly:' \"$_out\""
+	assertTrue "al=root kept" "grep -q ':al=root:' \"$_out\""
+	rm -f "$_in" "$_mid" "$_out"
+}
+
+test_check_root_owned_missing_path() {
+	if [ "$(uname -s 2>/dev/null)" != "FreeBSD" ] ; then
+		startSkipping
+	fi
+	assertFalse "missing path fails" "check_root_owned_not_writable /nonexistent/installx-ly-test-$$"
+	endSkipping
+}
+
+test_check_root_owned_rejects_world_writable() {
+	if [ "$(uname -s 2>/dev/null)" != "FreeBSD" ] || [ "$(id -u)" -ne 0 ] ; then
+		# Needs FreeBSD stat(1) and root to own the file as root
+		startSkipping
+	fi
+	_f=$(mktemp /tmp/installx-own.XXXXXX)
+	chmod 666 "$_f"
+	# Ensure root-owned (we are root in FreeBSD CI)
+	chown root:wheel "$_f" 2>/dev/null || true
+	assertFalse "world-writable rejected" "check_root_owned_not_writable \"$_f\""
+	rm -f "$_f"
+	endSkipping
+}
+
+test_check_root_owned_accepts_safe_file() {
+	if [ "$(uname -s 2>/dev/null)" != "FreeBSD" ] || [ "$(id -u)" -ne 0 ] ; then
+		startSkipping
+	fi
+	_f=$(mktemp /tmp/installx-own.XXXXXX)
+	chown root:wheel "$_f"
+	chmod 644 "$_f"
+	assertTrue "root-owned 644 accepted" "check_root_owned_not_writable \"$_f\""
+	rm -f "$_f"
+	endSkipping
+}
+
+test_check_root_owned_rejects_non_root_owner() {
+	if [ "$(uname -s 2>/dev/null)" != "FreeBSD" ] ; then
+		startSkipping
+		endSkipping
+		return 0
+	fi
+	_f=$(mktemp /tmp/installx-own.XXXXXX)
+	if [ "$(id -u)" -eq 0 ] ; then
+		if ! pw usershow nobody >/dev/null 2>&1 ; then
+			rm -f "$_f"
+			startSkipping
+			endSkipping
+			return 0
+		fi
+		chown nobody "$_f"
+	fi
+	# As non-root, creator is already non-root — sufficient
+	chmod 644 "$_f"
+	assertFalse "non-root owner rejected" "check_root_owned_not_writable \"$_f\""
+	rm -f "$_f"
 }
 
 # ---------------------------------------------------------------------------
