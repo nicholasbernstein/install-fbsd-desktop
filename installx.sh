@@ -852,8 +852,14 @@ GETTYEOF
 		# shellcheck disable=SC2016
 		sed -i '' -e 's|^ttyv1.*|ttyv1	"/usr/libexec/getty Ly"	xterm	on  secure|' /etc/ttys
 		echo "ly: configured ttyv1 → getty Ly (backup: /etc/ttys.installx.bak)" | tee -a "$LOGFILE"
-		# Re-read ttys without full reboot when possible
-		kill -HUP 1 2>/dev/null || true
+		# Re-read ttys without full reboot when possible. Skip in noninteractive/CI:
+		# HUPing init can spawn ly/getty on a VT and leave daemons attached to the
+		# install SSH session, so headless CI never sees the guest script exit.
+		if is_noninteractive ; then
+			echo "ly: noninteractive — not signaling init; getty Ly applies on reboot" | tee -a "$LOGFILE"
+		else
+			kill -HUP 1 2>/dev/null || true
+		fi
 	else
 		echo "ERROR: /etc/ttys missing ttyv1; could not enable ly greeter" | tee -a "$LOGFILE"
 		return 1
@@ -2021,8 +2027,16 @@ fi
 if [ "$SESSION_TYPE" = "wayland" ] ; then
 	if [ "$SEATD_NEEDED" = "yes" ] ; then
 		sysrc seatd_enable="YES"
-		service seatd start 2>/dev/null || true
-		report "seatd enabled" "$?"
+		# Start seatd now only on interactive installs. In CI/noninteractive, enable
+		# for next boot only — a live seatd (and later ly/getty) can pin the SSH
+		# session used by freebsd-vm so the step never finishes after "exit 0".
+		if is_noninteractive ; then
+			echo "seatd: enabled in rc.conf (not started — noninteractive/CI)" | tee -a "$LOGFILE"
+			report "seatd enabled" 0
+		else
+			service seatd start 2>/dev/null || true
+			report "seatd enabled" "$?"
+		fi
 	fi
 	case "$WAYLAND_COMPOSITOR" in
 		sway) seed_sway_config ; report "sway config" "$?" ;;
@@ -2040,6 +2054,12 @@ if [ "$SESSION_TYPE" = "wayland" ] ; then
 		else
 			report "ly greeter" "0"
 		fi
+	fi
+	# Headless CI: ensure no greeter/seatd leftover holds the install SSH session
+	if is_noninteractive ; then
+		service seatd stop 2>/dev/null || true
+		pkill -9 seatd 2>/dev/null || true
+		pkill -9 -f 'ly_wrapper|/usr/local/bin/ly' 2>/dev/null || true
 	fi
 fi
 
