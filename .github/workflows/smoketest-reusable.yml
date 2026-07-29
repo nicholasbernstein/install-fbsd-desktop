@@ -216,17 +216,24 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          echo "VM step outcome: ${{ steps.smoke_vm.outcome }}"
+          outcome="${{ steps.smoke_vm.outcome }}"
+          echo "VM step outcome: ${outcome}"
           if [ -f .smoke-result ]; then
             echo "Marker contents: $(cat .smoke-result)"
           else
-            echo "Marker missing (.smoke-result)"
+            # Expected with sync=rsync and copyback=false — guest files stay in the VM.
+            echo "Marker not on host (.smoke-result) — using VM step outcome"
           fi
-          # Prefer the in-guest result: install + shunit2 already finished successfully
-          # even when the VM action is later canceled during teardown.
+          # Optional: host-visible marker if copyback/nfs ever brings it back
           if [ -f .smoke-result ] && grep -qx pass .smoke-result; then
-            echo "Smoke PASSED (installx + shunit2)."
+            echo "Smoke PASSED (host-visible marker)."
             exit 0
           fi
-          echo "Smoke FAILED or incomplete." >&2
+          # Primary signal: guest run script exit status is the action outcome.
+          # (disable-cache + no live seatd/ly in CI should let the step finish.)
+          if [ "${outcome}" = "success" ]; then
+            echo "Smoke PASSED (VM step succeeded)."
+            exit 0
+          fi
+          echo "Smoke FAILED or incomplete (outcome=${outcome})." >&2
           exit 1
