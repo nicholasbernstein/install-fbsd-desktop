@@ -415,35 +415,37 @@ EOF
 test_check_root_owned_missing_path() {
 	if [ "$(uname -s 2>/dev/null)" != "FreeBSD" ] ; then
 		startSkipping
+		endSkipping
+		return 0
 	fi
 	assertFalse "missing path fails" "check_root_owned_not_writable /nonexistent/installx-ly-test-$$"
-	endSkipping
 }
 
 test_check_root_owned_rejects_world_writable() {
 	if [ "$(uname -s 2>/dev/null)" != "FreeBSD" ] || [ "$(id -u)" -ne 0 ] ; then
 		# Needs FreeBSD stat(1) and root to own the file as root
 		startSkipping
+		endSkipping
+		return 0
 	fi
 	_f=$(mktemp /tmp/installx-own.XXXXXX)
 	chmod 666 "$_f"
-	# Ensure root-owned (we are root in FreeBSD CI)
-	chown root:wheel "$_f" 2>/dev/null || true
+	chown root:wheel "$_f"
 	assertFalse "world-writable rejected" "check_root_owned_not_writable \"$_f\""
 	rm -f "$_f"
-	endSkipping
 }
 
 test_check_root_owned_accepts_safe_file() {
 	if [ "$(uname -s 2>/dev/null)" != "FreeBSD" ] || [ "$(id -u)" -ne 0 ] ; then
 		startSkipping
+		endSkipping
+		return 0
 	fi
 	_f=$(mktemp /tmp/installx-own.XXXXXX)
 	chown root:wheel "$_f"
 	chmod 644 "$_f"
 	assertTrue "root-owned 644 accepted" "check_root_owned_not_writable \"$_f\""
 	rm -f "$_f"
-	endSkipping
 }
 
 test_check_root_owned_rejects_non_root_owner() {
