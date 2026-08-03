@@ -287,6 +287,32 @@ PKGEOF
 	echo "pkg: wrote /usr/local/etc/pkg/repos/FreeBSD.conf (latest, opt-in)" | tee -a "$LOGFILE"
 }
 
+# Force the main FreeBSD package repo to quarterly. Some images (CI/vmactions)
+# ship with latest already configured; "prefer quarterly" must rewrite, not no-op.
+# Note: FreeBSD:14:amd64/latest currently omits x11/kde while quarterly has it.
+change_pkg_url_to_quarterly () {
+	for _pf in /etc/pkg/FreeBSD.conf /usr/local/etc/pkg/repos/FreeBSD.conf ; do
+		if [ -f "$_pf" ] && grep -qE '/latest["'\'']' "$_pf" 2>/dev/null ; then
+			# Only the main package set path (/latest), not kmods_* tokens
+			sed -i '.bak' -e 's|/latest"|/quarterly"|g' -e "s|/latest'|/quarterly'|g" "$_pf"
+			echo "pkg: rewrote latest→quarterly in $_pf" | tee -a "$LOGFILE"
+		fi
+		[ -f "$_pf" ] && grep -H 'url' "$_pf" 2>/dev/null | tee -a "$LOGFILE" || true
+	done
+	mkdir -p /usr/local/etc/pkg/repos
+	cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<'PKGEOF'
+# installx.sh — quarterly package set (default)
+FreeBSD: {
+  url: "pkg+https://pkg.FreeBSD.org/${ABI}/quarterly",
+  mirror_type: "srv",
+  signature_type: "fingerprints",
+  fingerprints: "/usr/share/keys/pkg",
+  enabled: yes
+}
+PKGEOF
+	echo "pkg: wrote /usr/local/etc/pkg/repos/FreeBSD.conf (quarterly)" | tee -a "$LOGFILE"
+}
+
 load_card_readers () {
 	# Load MMC/SD card-reader support
 	sysrc kld_list+="mmc"
@@ -514,7 +540,10 @@ if [ "$rolling" -eq 0  ] ; then
 	report "quarterly->latest changed" "$?"
 	installx_pkg_update_with_progress "Updating Package Catalog (latest)"
 else
-	echo "pkg: staying on quarterly package set" | tee -a "$LOGFILE"
+	# Always enforce quarterly (images may already be on latest)
+	change_pkg_url_to_quarterly
+	report "ensure quarterly package set" "$?"
+	installx_pkg_update_with_progress "Updating Package Catalog (quarterly)"
 fi
 
 # Set up defaults

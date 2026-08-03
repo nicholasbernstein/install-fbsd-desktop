@@ -145,9 +145,8 @@ jobs:
             export INSTALLX_NONINTERACTIVE=1
             export INSTALLX_USER="$TESTUSER"
             export INSTALLX_DESKTOP="${{ inputs.desktop }}"
-            # Leave INSTALLX_ROLLING unset so installx can prefer latest only on
-            # newest/preview FreeBSD; older releases stay on quarterly.
-            unset INSTALLX_ROLLING || true
+            # Always use quarterly in CI (14.x latest currently lacks x11/kde meta, etc.)
+            export INSTALLX_ROLLING=no
             export INSTALLX_EXTRA_PKGS="bash sudo"
             export INSTALLX_GRAPHICS=no
             # Probe sound stack in CI; skip fat audio packages to keep smoke runtime down

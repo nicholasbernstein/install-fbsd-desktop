@@ -85,8 +85,9 @@ Noninteractive env knobs (also used by CI):
 export INSTALLX_NONINTERACTIVE=1   # or CI=true
 export INSTALLX_USER=nick
 export INSTALLX_DESKTOP=Sway       # any menu name, e.g. Cinnamon Hyprland awesome …
-# INSTALLX_ROLLING: omit for auto (latest only on newest/preview FreeBSD),
-#   or set yes/no to force. Default policy is quarterly on stable releases.
+# INSTALLX_ROLLING=no  (default path) forces quarterly even if the image
+#   already points at latest; =yes switches to latest. Preview branches may
+#   still prefer latest when ROLLING is unset.
 export INSTALLX_EXTRA_PKGS="bash sudo"
 export INSTALLX_GRAPHICS=no
 # optional: INSTALLX_OPT="load_fuse enable_ipfw_firewall minimal_xorg ..."
