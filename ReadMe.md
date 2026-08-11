@@ -1,5 +1,7 @@
 Strongly inspired by https://github.com/broozar/installDesktopFreeBSD
 
+[![CI](https://github.com/nicholasbernstein/install-fbsd-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/nicholasbernstein/install-fbsd-desktop/actions/workflows/ci.yml)
+
 Run the script as the root use as follows you can use: 
 
 ```sh
